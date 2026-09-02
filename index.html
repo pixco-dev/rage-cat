@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e1915">
+  <meta name="description" content="뉴스를 분석하고 직접 매수·매도하는 12주 전략 투자 시뮬레이션">
+  <title>불장연구소 — 12주 투자 시뮬레이션</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="불장연구소 홈">
+      <span class="brand-icon">火</span>
+      <span><b>불장</b>연구소</span>
+    </a>
+    <nav>
+      <a href="#market" id="market-nav" hidden>시장</a>
+      <a href="#guide">게임 안내</a>
+      <span class="best-record">BEST <b id="best-record">0%</b></span>
+      <button class="sound-button" id="sound-button" type="button" aria-label="효과음 끄기">◖))</button>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="overline">12-WEEK MARKET SIMULATION</span>
+        <h1>감 말고 <em>근거</em>로,<br>월급을 굴려라.</h1>
+        <p>알바로 시드를 모으고, 정보를 사고, 뉴스를 해석하세요.<br>정답은 공짜가 아닙니다. 운은 조금만.</p>
+        <div class="hero-actions">
+          <button class="cta-button" id="open-setup" type="button">투자 계좌 만들기 <span>↗</span></button>
+          <a href="#guide">게임 방식 보기</a>
+        </div>
+        <dl class="hero-stats">
+          <div><dt>12</dt><dd>거래 주차</dd></div>
+          <div><dt>06</dt><dd>알바 · 정보</dd></div>
+          <div><dt>05</dt><dd>미니게임</dd></div>
+        </dl>
+      </div>
+
+      <div class="hero-terminal" aria-hidden="true">
+        <div class="terminal-top">
+          <i></i><i></i><i></i>
+          <span>MARKET OVERVIEW</span>
+          <b>LIVE</b>
+        </div>
+        <div class="terminal-index">
+          <span>LAB COMPOSITE</span>
+          <strong>2,684.21</strong>
+          <em>+2.84%</em>
+        </div>
+        <svg class="hero-chart" viewBox="0 0 520 190" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#ef5b3f" stop-opacity=".35"/>
+              <stop offset="100%" stop-color="#ef5b3f" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path class="grid" d="M0 30H520M0 80H520M0 130H520M80 0V190M180 0V190M280 0V190M380 0V190M480 0V190"/>
+          <path class="area" d="M0 160 L30 152 L55 158 L85 126 L115 136 L145 102 L175 111 L205 82 L235 96 L265 60 L295 71 L325 42 L355 56 L385 29 L415 45 L445 19 L475 34 L520 8 L520 190 L0 190Z"/>
+          <path class="line" d="M0 160 L30 152 L55 158 L85 126 L115 136 L145 102 L175 111 L205 82 L235 96 L265 60 L295 71 L325 42 L355 56 L385 29 L415 45 L445 19 L475 34 L520 8"/>
+        </svg>
+        <div class="terminal-tickers">
+          <span><i class="tech"></i>K-TECH <b>▲ 4.2%</b></span>
+          <span><i class="bio"></i>BIO <b>▲ 1.8%</b></span>
+          <span><i class="gold"></i>GOLD <em>▼ 0.6%</em></span>
+        </div>
+        <div class="terminal-stamp">SIMULATION<br>ONLY</div>
+      </div>
+    </section>
+
+    <section class="game is-locked" id="market" hidden aria-labelledby="game-title">
+      <div class="game-head">
+        <div>
+          <span class="overline">YOUR TRADING DESK</span>
+          <h2 id="game-title"><b id="week-label">1주차</b> 투자 전략</h2>
+        </div>
+        <div class="game-head-actions">
+          <span id="difficulty-label">연습생 모드</span>
+          <button id="restart-button" type="button">새 게임</button>
+        </div>
+      </div>
+
+      <section class="metrics" aria-label="계좌 요약">
+        <article class="metric primary">
+          <span>총 자산</span>
+          <strong id="total-assets">800만원</strong>
+          <small id="goal-progress">목표 1,800만원 · 44%</small>
+          <div class="goal-bar"><i id="goal-fill"></i></div>
+        </article>
+        <article class="metric">
+          <span>보유 현금</span>
+          <strong id="cash">800만원</strong>
+          <small id="cash-ratio">현금 비중 100%</small>
+        </article>
+        <article class="metric">
+          <span>누적 수익률</span>
+          <strong id="total-return">0.0%</strong>
+          <small id="profit-value">평가 손익 0만원</small>
+        </article>
+        <article class="metric">
+          <span>에너지</span>
+          <strong><b id="energy-points">4</b> / <span id="energy-max">4</span></strong>
+          <small>알바 · 정보 · 미니게임</small>
+        </article>
+        <article class="metric">
+          <span>리서치</span>
+          <strong><b id="research-points">2</b> P</strong>
+          <small>종목 정밀 분석</small>
+        </article>
+      </section>
+
+      <div class="game-layout">
+        <div class="market-column">
+          <article class="news-card" id="news-card">
+            <div class="news-meta">
+              <span id="news-category">이번 주 핵심 뉴스</span>
+              <time id="news-date">WEEK 01</time>
+            </div>
+            <div class="news-content">
+              <span class="news-icon" id="news-icon">⚡</span>
+              <div>
+                <h3 id="news-title">정부, 미래 산업 지원책 발표 예고</h3>
+                <p id="news-description">관련 산업에 자금이 유입될 가능성이 있습니다. 뉴스의 영향을 확인하고 포트폴리오를 조정하세요.</p>
+                <div class="news-tags" id="news-tags"></div>
+              </div>
+            </div>
+            <div class="news-hint">
+              <span>ANALYST NOTE</span>
+              <p id="analyst-note">헤드라인만으로는 승자를 단정할 수 없습니다. 현장 정보나 리서치가 필요합니다.</p>
+            </div>
+          </article>
+
+          <section class="activity-board" aria-label="주간 활동">
+            <div class="asset-section-head">
+              <div>
+                <h3>주간 활동</h3>
+                <span>에너지는 매주 초기화됩니다. 알바로 시드를, 정보로 힌트를 모으세요.</span>
+              </div>
+              <div class="energy-chip">에너지 <b id="energy-chip">4</b></div>
+            </div>
+            <div class="activity-tabs" role="tablist">
+              <button class="activity-tab active" type="button" data-tab="jobs">노동 알바</button>
+              <button class="activity-tab" type="button" data-tab="intel">정보 수집</button>
+              <button class="activity-tab" type="button" data-tab="play">미니게임</button>
+            </div>
+            <div class="activity-panels">
+              <div class="activity-panel-list" id="jobs-panel" data-panel="jobs"></div>
+              <div class="activity-panel-list hidden" id="intel-panel" data-panel="intel"></div>
+              <div class="activity-panel-list hidden" id="play-panel" data-panel="play"></div>
+            </div>
+          </section>
+
+          <div class="asset-section-head">
+            <div>
+              <h3>투자 자산</h3>
+              <span>기본 전망은 비공개입니다. 정보나 리서치로 열어야 합니다</span>
+            </div>
+            <div class="legend"><span><i class="up"></i>확인된 상승</span><span><i class="down"></i>확인된 하락</span></div>
+          </div>
+
+          <div class="asset-list" id="asset-list"></div>
+
+          <div class="market-close">
+            <div>
+              <span>거래를 마쳤나요?</span>
+              <p>장 마감 후 이번 주 뉴스가 가격에 반영됩니다.</p>
+            </div>
+            <button class="cta-button" id="close-market" type="button">이번 주 장 마감 <span>→</span></button>
+          </div>
+        </div>
+
+        <aside class="side-column">
+          <article class="side-card portfolio-card">
+            <div class="side-title">
+              <h3>포트폴리오</h3>
+              <span id="holding-count">0개 자산</span>
+            </div>
+            <div class="portfolio-visual">
+              <div class="donut" id="portfolio-donut"><span><b id="invested-ratio">0%</b>투자 중</span></div>
+              <div class="portfolio-legend" id="portfolio-legend"></div>
+            </div>
+            <div class="risk-meter">
+              <div><span>포트폴리오 위험도</span><b id="risk-label">안전</b></div>
+              <div class="risk-track"><i id="risk-fill"></i></div>
+            </div>
+          </article>
+
+          <article class="side-card mission-card">
+            <div class="side-title">
+              <h3>이번 게임 미션</h3>
+              <span id="mission-count">0 / 4</span>
+            </div>
+            <ul id="mission-list"></ul>
+          </article>
+
+          <article class="side-card achievements-card">
+            <div class="side-title">
+              <h3>업적 배지</h3>
+              <span id="achievement-count">0 / 6</span>
+            </div>
+            <div class="badge-grid" id="badge-grid"></div>
+          </article>
+
+          <article class="side-card log-card">
+            <div class="side-title">
+              <h3>거래 기록</h3>
+              <button id="clear-log" type="button">지우기</button>
+            </div>
+            <ol id="trade-log">
+              <li class="empty-log">아직 거래가 없습니다.</li>
+            </ol>
+          </article>
+        </aside>
+      </div>
+    </section>
+
+    <section class="guide" id="guide">
+      <div class="guide-head">
+        <span class="overline">HOW TO SURVIVE</span>
+        <h2>운보다 판단이<br>중요한 이유.</h2>
+      </div>
+      <div class="guide-grid">
+        <article><span>01</span><i>勞動</i><h3>알바로 시드를 모으세요</h3><p>매주 에너지로 아르바이트를 뛰면 시드머니가 들어옵니다. 투자 전에 먼저 일하세요.</p></article>
+        <article><span>02</span><i>情報</i><h3>정보는 사서 쓰세요</h3><p>뉴스는 힌트일 뿐입니다. 소문, 제보, 퀴즈, 리서치로 방향을 열어야 합니다.</p></article>
+        <article><span>03</span><i>配分</i><h3>분산하세요</h3><p>한 종목에 전부 투자하면 빠르게 벌 수 있지만, 더 빠르게 잃을 수도 있습니다.</p></article>
+        <article><span>04</span><i>忍耐</i><h3>현금도 전략입니다</h3><p>정보가 부족하면 일하거나 쉬세요. 기회는 12주 동안 계속 찾아옵니다.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="brand"><span class="brand-icon">火</span><span><b>불장</b>연구소</span></div>
+    <p>본 게임은 실제 투자와 무관한 시뮬레이션입니다.</p>
+    <span>© 2026 BULL LAB</span>
+  </footer>
+
+  <div class="modal" id="setup-modal" hidden>
+    <div class="modal-backdrop" data-close="setup"></div>
+    <section class="setup-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+      <button class="modal-x" data-close="setup" type="button" aria-label="닫기">×</button>
+      <span class="overline">OPEN YOUR ACCOUNT</span>
+      <h2 id="setup-title">투자 성향을 선택하세요</h2>
+      <p>시작 시드는 적습니다. 알바와 정보 수집으로 판돈을 키우세요.</p>
+      <div class="difficulty-list">
+        <button class="difficulty active" type="button" data-mode="rookie">
+          <span class="difficulty-icon">🌱</span><b>연습생</b><small>처음이라면 추천</small>
+          <dl><div><dt>시작</dt><dd>800만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>4</dd></div></dl>
+        </button>
+        <button class="difficulty" type="button" data-mode="trader">
+          <span class="difficulty-icon">📈</span><b>트레이더</b><small>균형 잡힌 도전</small>
+          <dl><div><dt>시작</dt><dd>650만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
+        </button>
+        <button class="difficulty" type="button" data-mode="wolf">
+          <span class="difficulty-icon">🐺</span><b>여의도 늑대</b><small>실수는 곧 퇴장</small>
+          <dl><div><dt>시작</dt><dd>450만원</dd></div><div><dt>목표</dt><dd>2,000만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
+        </button>
+      </div>
+      <button class="cta-button setup-start" id="start-game" type="button">12주 투자 시작 <span>→</span></button>
+    </section>
+  </div>
+
+  <div class="modal" id="week-modal" hidden>
+    <div class="modal-backdrop"></div>
+    <section class="week-panel" role="dialog" aria-modal="true" aria-labelledby="week-result-title">
+      <span class="overline" id="week-result-label">WEEK 01 CLOSED</span>
+      <h2 id="week-result-title">이번 주 시장 마감</h2>
+      <p id="week-result-summary">뉴스가 시장에 반영되었습니다.</p>
+      <div class="week-results" id="week-results"></div>
+      <div class="week-account">
+        <span>주간 평가 손익 <b id="week-profit">+0만원</b></span>
+        <span>현재 총자산 <strong id="week-total">0만원</strong></span>
+      </div>
+      <button class="cta-button" id="next-week" type="button">다음 주 뉴스 확인 <span>→</span></button>
+    </section>
+  </div>
+
+  <div class="modal" id="end-modal" hidden>
+    <div class="modal-backdrop"></div>
+    <section class="end-panel" role="dialog" aria-modal="true" aria-labelledby="end-title">
+      <span class="end-rank" id="end-rank">A</span>
+      <span class="overline" id="end-label">12-WEEK REPORT</span>
+      <h2 id="end-title">목표 달성!</h2>
+      <p id="end-description">시장보다 한발 앞섰습니다.</p>
+      <div class="end-score">
+        <span>최종 자산</span><strong id="end-assets">0만원</strong><em id="end-return">+0.0%</em>
+      </div>
+      <div class="end-breakdown">
+        <div><span>성공한 미션</span><b id="end-missions">0 / 4</b></div>
+        <div><span>획득한 배지</span><b id="end-badges">0 / 6</b></div>
+        <div><span>알바 수입</span><b id="end-labor">0만원</b></div>
+      </div>
+      <button class="cta-button" id="play-again" type="button">새 계좌로 재도전 <span>↻</span></button>
+    </section>
+  </div>
+
+  <div class="modal" id="activity-modal" hidden>
+    <div class="modal-backdrop" data-close="activity"></div>
+    <section class="play-panel" role="dialog" aria-modal="true" aria-labelledby="play-title">
+      <button class="modal-x" data-close="activity" type="button" aria-label="닫기">×</button>
+      <div id="play-stage"></div>
+    </section>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="game.js"></script>
+</body>
+</html>
