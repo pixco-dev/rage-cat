@@ -2,6 +2,12 @@
   "use strict";
 
   const MAX_WEEKS = 12;
+  const PEER_PREFIX = "bullab-";
+  const AUTH_STORE = "bull-lab-accounts-v1";
+  const SESSION_STORE = "bull-lab-session-v1";
+  const AD_COST = 18;
+  const MIN_SEED = 80;
+  const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
   const MODES = {
     rookie: { name: "연습생 모드", cash: 800, goal: 1800, research: 2, energy: 4 },
@@ -10,13 +16,50 @@
   };
 
   const ASSET_BLUEPRINTS = [
-    { id: "tech", symbol: "KTX", name: "한빛테크", sector: "기술 · 반도체", price: 82, trend: .008, noise: .018, risk: 3, color: "#4b79e8", dividend: 0 },
-    { id: "bio", symbol: "BIO", name: "새봄바이오", sector: "제약 · 헬스케어", price: 54, trend: .004, noise: .024, risk: 4, color: "#1f9d6a", dividend: 0 },
-    { id: "energy", symbol: "NRG", name: "태양에너지", sector: "에너지 · 인프라", price: 71, trend: .003, noise: .016, risk: 3, color: "#ef8c3f", dividend: .01 },
-    { id: "retail", symbol: "RTL", name: "모두리테일", sector: "소비재 · 유통", price: 39, trend: .002, noise: .012, risk: 2, color: "#8267d9", dividend: .008 },
-    { id: "gold", symbol: "GLD", name: "금 현물 ETF", sector: "안전자산 · 원자재", price: 96, trend: .001, noise: .008, risk: 1, color: "#d6a52d", dividend: 0 },
-    { id: "coin", symbol: "LBC", name: "럭키비트", sector: "가상자산 · 고위험", price: 24, trend: 0, noise: .038, risk: 5, color: "#ef5b6f", dividend: 0 },
+    { id: "tech", symbol: "KTX", name: "한빛테크", sector: "기술 · 반도체", sectorKey: "tech", price: 82, trend: .008, noise: .018, risk: 3, color: "#4b79e8", dividend: 0, float: 420 },
+    { id: "bio", symbol: "BIO", name: "새봄바이오", sector: "제약 · 헬스케어", sectorKey: "bio", price: 54, trend: .004, noise: .024, risk: 4, color: "#1f9d6a", dividend: 0, float: 360 },
+    { id: "energy", symbol: "NRG", name: "태양에너지", sector: "에너지 · 인프라", sectorKey: "energy", price: 71, trend: .003, noise: .016, risk: 3, color: "#ef8c3f", dividend: .01, float: 400 },
+    { id: "retail", symbol: "RTL", name: "모두리테일", sector: "소비재 · 유통", sectorKey: "retail", price: 39, trend: .002, noise: .012, risk: 2, color: "#8267d9", dividend: .008, float: 480 },
+    { id: "gold", symbol: "GLD", name: "금 현물 ETF", sector: "안전자산 · 원자재", sectorKey: "gold", price: 96, trend: .001, noise: .008, risk: 1, color: "#d6a52d", dividend: 0, float: 520 },
+    { id: "coin", symbol: "LBC", name: "럭키비트", sector: "가상자산 · 고위험", sectorKey: "coin", price: 24, trend: 0, noise: .038, risk: 5, color: "#ef5b6f", dividend: 0, float: 300 },
   ];
+
+  const SECTORS = [
+    { key: "tech", label: "기술 · 반도체" },
+    { key: "bio", label: "제약 · 헬스케어" },
+    { key: "energy", label: "에너지 · 인프라" },
+    { key: "retail", label: "소비재 · 유통" },
+    { key: "gold", label: "안전자산 · 원자재" },
+    { key: "coin", label: "가상자산 · 고위험" },
+    { key: "player", label: "플레이어 · 비상장 출신" },
+  ];
+
+  const PLAYER_COLORS = ["#c45c26", "#2a6f7f", "#8b3d62", "#4a6b2f", "#6b4ea1", "#b33b3b"];
+
+  const BOT_INVESTORS = [
+    { id: "bot-kim", name: "김봇서" },
+    { id: "bot-lee", name: "이봇윤" },
+    { id: "bot-park", name: "박봇준" },
+    { id: "bot-choi", name: "최봇하" },
+    { id: "bot-jung", name: "정봇우" },
+    { id: "bot-han", name: "한봇별" },
+  ];
+
+  const BOT_FIRMS = [
+    { name: "달맞이소프트", symbol: "DMS", sectorKey: "tech", seed: 120 },
+    { name: "북극성바이오", symbol: "PSB", sectorKey: "bio", seed: 110 },
+    { name: "한울전력", symbol: "HUL", sectorKey: "energy", seed: 100 },
+    { name: "골목마켓", symbol: "GMK", sectorKey: "retail", seed: 90 },
+    { name: "모래금맥", symbol: "MGM", sectorKey: "gold", seed: 95 },
+    { name: "별똥코인랩", symbol: "BCL", sectorKey: "coin", seed: 85 },
+  ];
+
+  const AD_CLAIMS = {
+    growth: "성장",
+    dividend: "배당",
+    stable: "안정",
+    none: "메시지 없음",
+  };
 
   const EVENTS = [
     {
@@ -220,10 +263,10 @@
   ];
 
   const INTEL = [
-    { id: "rumor", name: "골목 소문", icon: "👂", cost: 0, energy: 1, accuracy: .55, scope: "one", copy: "카페에서 들리는 이야기. 반은 거짓입니다." },
-    { id: "leak", name: "익명 제보", icon: "📩", cost: 20, energy: 1, accuracy: .78, scope: "one", copy: "20만원을 주고 한 종목의 방향을 듣습니다." },
-    { id: "sector", name: "업종 브리핑", icon: "📂", cost: 12, energy: 1, accuracy: .72, scope: "sector", copy: "이번 주 가장 뜨거운 업종 힌트를 받습니다." },
-    { id: "report", name: "유료 리포트", icon: "📑", cost: 35, energy: 1, accuracy: .88, scope: "precise", copy: "한 종목의 예상 구간. 그래도 100%는 아닙니다." },
+    { id: "rumor", name: "골목 소문", icon: "👂", cost: 0, energy: 1, accuracy: .55, scope: "one", copy: "카페 소문입니다. 광고와 대조하세요. 반은 거짓입니다." },
+    { id: "leak", name: "익명 제보", icon: "📩", cost: 20, energy: 1, accuracy: .78, scope: "one", copy: "광고 밖의 약한 제보. 방향을 단정하지 마세요." },
+    { id: "sector", name: "업종 브리핑", icon: "📂", cost: 12, energy: 1, accuracy: .72, scope: "sector", copy: "업종 온도만 알려줍니다. 승자 종목은 비공개입니다." },
+    { id: "report", name: "유료 리포트", icon: "📑", cost: 35, energy: 1, accuracy: .88, scope: "precise", copy: "한 종목 구간 추정. 광고보다 비싸지만 100%는 아닙니다." },
   ];
 
   const PLAYS = [
@@ -551,12 +594,56 @@
     bestRecord: $("#best-record"),
     sound: $("#sound-button"),
     toastStack: $("#toast-stack"),
+    accountButton: $("#account-button"),
+    authModal: $("#auth-modal"),
+    authForm: $("#auth-form"),
+    authId: $("#auth-id"),
+    authNick: $("#auth-nick"),
+    authNickWrap: $("#auth-nick-wrap"),
+    authPass: $("#auth-pass"),
+    authError: $("#auth-error"),
+    authSubmit: $("#auth-submit"),
+    authTitle: $("#auth-title"),
+    lobbyModal: $("#lobby-modal"),
+    lobbyUser: $("#lobby-user"),
+    lobbyStatus: $("#lobby-status"),
+    lobbySolo: $("#lobby-solo"),
+    lobbyHost: $("#lobby-host"),
+    lobbyJoin: $("#lobby-join"),
+    joinCode: $("#join-code"),
+    roomCodeLabel: $("#room-code-label"),
+    playerList: $("#player-list"),
+    copyRoom: $("#copy-room"),
+    foundButton: $("#found-button"),
+    adButton: $("#ad-button"),
+    foundModal: $("#found-modal"),
+    foundForm: $("#found-form"),
+    foundName: $("#found-name"),
+    foundSymbol: $("#found-symbol"),
+    foundSector: $("#found-sector"),
+    foundSeed: $("#found-seed"),
+    foundError: $("#found-error"),
+    adModal: $("#ad-modal"),
+    adForm: $("#ad-form"),
+    adSlogan: $("#ad-slogan"),
+    adClaim: $("#ad-claim"),
+    adError: $("#ad-error"),
+    adTicker: $("#ad-ticker"),
+    adList: $("#ad-list"),
+    closeMarketHint: $("#close-market-hint"),
+    continueSeason: $("#continue-season"),
+    weekResultTitle: $("#week-result-title"),
   };
 
   let selectedMode = "rookie";
   let soundOn = true;
   let audioContext = null;
   let state;
+  let session = null;
+  let authMode = "login";
+  let authNext = "setup";
+  let botTimers = [];
+  const net = { peer: null, conns: [], hostConn: null, connecting: false };
 
   function random() {
     if (window.crypto?.getRandomValues) {
@@ -582,20 +669,42 @@
       initialPrice: asset.price,
       lastChange: 0,
       history: [asset.price],
+      weekFlow: 0,
+      lastFlow: 0,
+      weekOpen: asset.price,
+      playerCompany: false,
+      founderId: null,
+      founderName: "",
+      trust: 0.72,
+      adWeeks: 0,
+      ad: null,
+      opsNote: "",
+      opsShock: 0,
     }));
   }
 
-  function freshHoldings() {
-    return Object.fromEntries(ASSET_BLUEPRINTS.map((asset) => [asset.id, { qty: 0, avg: 0 }]));
+  function emptyHolding() {
+    return { qty: 0, avg: 0 };
+  }
+
+  function freshHoldings(assets = ASSET_BLUEPRINTS) {
+    return Object.fromEntries(assets.map((asset) => [asset.id, emptyHolding()]));
+  }
+
+  function ensureHolding(holdings, id) {
+    if (!holdings[id]) holdings[id] = emptyHolding();
+    return holdings[id];
   }
 
   function createState(modeKey = "rookie", active = false) {
     const config = MODES[modeKey];
+    const assets = freshAssets();
     return {
       active,
       locked: !active,
       modeKey,
       config,
+      season: 1,
       week: 1,
       cash: config.cash,
       initialCash: config.cash,
@@ -603,8 +712,8 @@
       research: config.research,
       energy: config.energy,
       energyMax: config.energy,
-      assets: freshAssets(),
-      holdings: freshHoldings(),
+      assets,
+      holdings: freshHoldings(assets),
       eventDeck: shuffled(EVENTS).slice(0, MAX_WEEKS),
       event: null,
       expected: {},
@@ -627,8 +736,987 @@
       playCount: 0,
       jobsCount: 0,
       terminal: false,
+      seasonBreak: false,
       currentPlay: null,
+      playMode: "solo",
+      roomCode: "",
+      playerId: session?.id || "guest",
+      playerName: session?.nick || session?.id || "투자자",
+      founded: null,
+      ads: [],
+      players: [],
+      adDone: false,
     };
+  }
+
+  function isAuthority() {
+    return state.playMode !== "client";
+  }
+
+  function round1(value) {
+    return Math.round(value * 10) / 10;
+  }
+
+  function makeRoomCode() {
+    return Array.from({ length: 5 }, () => CODE_CHARS[Math.floor(random() * CODE_CHARS.length)]).join("");
+  }
+
+  function bufToHex(buf) {
+    return [...new Uint8Array(buf)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function hexToBuf(hex) {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i += 1) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+
+  async function hashPassword(password, saltHex) {
+    const enc = new TextEncoder();
+    const salt = saltHex ? hexToBuf(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+    const pass = enc.encode(password);
+    const data = new Uint8Array(salt.length + pass.length);
+    data.set(salt);
+    data.set(pass, salt.length);
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return { hash: bufToHex(digest), salt: bufToHex(salt) };
+  }
+
+  function readAccounts() {
+    try {
+      return JSON.parse(localStorage.getItem(AUTH_STORE) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function writeAccounts(accounts) {
+    localStorage.setItem(AUTH_STORE, JSON.stringify(accounts));
+  }
+
+  function readSession() {
+    try {
+      return JSON.parse(localStorage.getItem(SESSION_STORE) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function writeSession(next) {
+    session = next;
+    if (next) localStorage.setItem(SESSION_STORE, JSON.stringify(next));
+    else localStorage.removeItem(SESSION_STORE);
+    renderAccount();
+  }
+
+  function renderAccount() {
+    if (!els.accountButton) return;
+    if (session) {
+      els.accountButton.textContent = session.nick;
+      els.accountButton.classList.add("is-in");
+    } else {
+      els.accountButton.textContent = "로그인";
+      els.accountButton.classList.remove("is-in");
+    }
+  }
+
+  function setAuthMode(mode) {
+    authMode = mode;
+    $$(".auth-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.auth === mode));
+    els.authTitle.textContent = mode === "login" ? "로그인" : "회원가입";
+    els.authSubmit.innerHTML = mode === "login" ? `로그인 <span>→</span>` : `가입하고 입장 <span>→</span>`;
+    els.authNickWrap.hidden = mode === "login";
+    els.authPass.autocomplete = mode === "login" ? "current-password" : "new-password";
+    els.authError.hidden = true;
+  }
+
+  function showAuthError(message) {
+    els.authError.hidden = false;
+    els.authError.textContent = message;
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    const id = (els.authId.value || "").trim().toLowerCase();
+    const nick = (els.authNick.value || "").trim() || id;
+    const password = els.authPass.value || "";
+    if (!/^[a-z0-9_]{3,16}$/.test(id)) {
+      showAuthError("아이디는 3–16자의 영문·숫자·밑줄만 가능합니다.");
+      return;
+    }
+    if (password.length < 4) {
+      showAuthError("비밀번호는 4자 이상이어야 합니다.");
+      return;
+    }
+    const accounts = readAccounts();
+    if (authMode === "register") {
+      if (accounts[id]) {
+        showAuthError("이미 있는 아이디입니다.");
+        return;
+      }
+      const hashed = await hashPassword(password);
+      accounts[id] = { id, nick, salt: hashed.salt, hash: hashed.hash, created: Date.now() };
+      writeAccounts(accounts);
+      writeSession({ id, nick });
+    } else {
+      const row = accounts[id];
+      if (!row) {
+        showAuthError("계정을 찾을 수 없습니다. 회원가입을 먼저 하세요.");
+        return;
+      }
+      const hashed = await hashPassword(password, row.salt);
+      if (hashed.hash !== row.hash) {
+        showAuthError("비밀번호가 맞지 않습니다.");
+        return;
+      }
+      writeSession({ id, nick: row.nick || id });
+    }
+    els.authPass.value = "";
+    closeModal(els.authModal);
+    toast("🪪", "로그인", `${session.nick} 님, 데스크에 오신 것을 환영합니다.`);
+    if (authNext === "setup") openModal(els.setupModal);
+    authNext = "setup";
+  }
+
+  function logout() {
+    writeSession(null);
+    destroyNet();
+    if (state?.active) {
+      hideDesk();
+      state = createState("rookie", false);
+      prepareWeek();
+    }
+    toast("👋", "로그아웃", "세션을 종료했습니다.");
+  }
+
+  function requireSession() {
+    if (session) return true;
+    authNext = "setup";
+    setAuthMode("login");
+    openModal(els.authModal);
+    return false;
+  }
+
+  function sectorLabel(key) {
+    return SECTORS.find((item) => item.key === key)?.label || "플레이어 · 비상장 출신";
+  }
+
+  function publicEvent(event) {
+    if (!event) return null;
+    return {
+      category: event.category,
+      icon: event.icon,
+      title: event.title,
+      description: event.description,
+      themes: event.themes || [],
+      note: event.note,
+    };
+  }
+
+  function cloneHoldings(holdings) {
+    const out = {};
+    Object.keys(holdings || {}).forEach((id) => {
+      out[id] = { qty: holdings[id].qty || 0, avg: holdings[id].avg || 0 };
+    });
+    return out;
+  }
+
+  function holdingsValueOf(holdings) {
+    return state.assets.reduce((sum, asset) => {
+      const qty = holdings?.[asset.id]?.qty || 0;
+      return sum + asset.price * qty;
+    }, 0);
+  }
+
+  function playerTotal(player) {
+    if (!player) return 0;
+    if (player.id === state.playerId) return totalAssets();
+    return (player.cash || 0) + holdingsValueOf(player.holdings);
+  }
+
+  function syncLocalPlayer() {
+    if (!state) return;
+    const existing = state.players.find((item) => item.id === state.playerId);
+    const snapshot = {
+      id: state.playerId,
+      name: state.playerName,
+      cash: state.cash,
+      holdings: cloneHoldings(state.holdings),
+      founded: state.founded,
+      total: totalAssets(),
+      bot: false,
+    };
+    if (existing) Object.assign(existing, snapshot);
+    else state.players.unshift(snapshot);
+    state.players.forEach((player) => {
+      player.total = playerTotal(player);
+    });
+  }
+
+  function applyFlow(asset, signedQty) {
+    const float = Math.max(40, asset.float || 400);
+    const k = asset.playerCompany ? 0.62 : 0.3;
+    const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * k));
+    asset.price = Math.max(5, round1(asset.price * (1 + impact)));
+    asset.weekFlow = (asset.weekFlow || 0) + signedQty;
+  }
+
+  function flowHint(asset) {
+    const flow = asset.weekFlow || asset.lastFlow || 0;
+    if (flow > 2) return { text: "매수세", type: "up" };
+    if (flow < -2) return { text: "매도세", type: "down" };
+    return { text: "보합 수급", type: "flat" };
+  }
+
+  function getActor(playerId) {
+    if (playerId === state.playerId) {
+      return {
+        id: playerId,
+        isLocal: true,
+        get cash() { return state.cash; },
+        set cash(value) { state.cash = value; },
+        holdings: state.holdings,
+      };
+    }
+    const player = state.players.find((item) => item.id === playerId);
+    if (!player) return null;
+    player.holdings = player.holdings || {};
+    return {
+      id: playerId,
+      isLocal: false,
+      get cash() { return player.cash; },
+      set cash(value) { player.cash = value; },
+      holdings: player.holdings,
+      player,
+    };
+  }
+
+  function executeTrade(playerId, assetId, side, qty, options = {}) {
+    const actor = getActor(playerId);
+    const asset = assetById(assetId);
+    qty = Math.floor(Number(qty) || 0);
+    if (!actor || !asset || qty < 1 || state.locked) return { ok: false, err: "locked" };
+    const holding = ensureHolding(actor.holdings, assetId);
+    if (side === "buy") {
+      const cost = asset.price * qty;
+      if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
+      holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
+      holding.qty += qty;
+      actor.cash = round1(actor.cash - cost);
+      applyFlow(asset, qty);
+      if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
+    } else {
+      if (qty > holding.qty) return { ok: false, err: "qty" };
+      const proceeds = asset.price * qty;
+      if (actor.isLocal && asset.price > holding.avg) state.profitableSales += 1;
+      holding.qty -= qty;
+      actor.cash = round1(actor.cash + proceeds);
+      if (holding.qty === 0) holding.avg = 0;
+      applyFlow(asset, -qty);
+      if (actor.isLocal && !options.silent) recordTrade("sell", asset, qty, proceeds);
+    }
+    syncLocalPlayer();
+    return { ok: true };
+  }
+
+  function listCompany(spec) {
+    const { ownerId, ownerName, name, symbol, sectorKey, seed, bot } = spec;
+    const owner = getActor(ownerId);
+    if (!owner) return { ok: false, err: "player" };
+    const player = state.players.find((item) => item.id === ownerId);
+    if ((ownerId === state.playerId && state.founded) || player?.founded) {
+      return { ok: false, err: "once" };
+    }
+    const ticker = String(symbol || "").trim().toUpperCase();
+    if (!/^[A-Z]{2,4}$/.test(ticker)) return { ok: false, err: "ticker" };
+    if (state.assets.some((asset) => asset.symbol === ticker)) return { ok: false, err: "dup" };
+    const firmName = String(name || "").trim().slice(0, 12);
+    if (firmName.length < 2) return { ok: false, err: "name" };
+    const spend = Math.max(MIN_SEED, Math.min(owner.cash, Math.round(Number(seed) || MIN_SEED)));
+    if (spend > owner.cash) return { ok: false, err: "cash" };
+    const price = Math.max(28, Math.min(76, round1(spend / 2.1)));
+    const founderQty = Math.max(8, Math.floor(spend / price));
+    const cost = round1(founderQty * price);
+    if (cost > owner.cash) return { ok: false, err: "cash" };
+    const id = `co-${ownerId}`;
+    if (state.assets.some((asset) => asset.id === id)) return { ok: false, err: "once" };
+    const asset = {
+      id,
+      symbol: ticker,
+      name: firmName,
+      sector: sectorLabel(sectorKey),
+      sectorKey: sectorKey || "player",
+      price,
+      initialPrice: price,
+      lastChange: 0,
+      history: [price],
+      trend: 0.002,
+      noise: bot ? 0.012 : 0.01,
+      risk: 4,
+      color: PLAYER_COLORS[state.assets.length % PLAYER_COLORS.length],
+      dividend: sectorKey === "retail" || sectorKey === "gold" ? 0.006 : 0,
+      float: Math.max(90, founderQty * 3),
+      weekFlow: 0,
+      lastFlow: 0,
+      weekOpen: price,
+      playerCompany: true,
+      founderId: ownerId,
+      founderName: ownerName || ownerId,
+      trust: 0.78,
+      adWeeks: 0,
+      ad: null,
+      opsNote: "상장 직후, 실적은 아직 짧습니다.",
+      opsShock: 0,
+    };
+    state.assets.push(asset);
+    state.players.forEach((item) => ensureHolding(item.holdings || (item.holdings = {}), id));
+    ensureHolding(state.holdings, id);
+    owner.cash = round1(owner.cash - cost);
+    const holding = ensureHolding(owner.holdings, id);
+    holding.qty = founderQty;
+    holding.avg = price;
+    const founded = { assetId: id, name: firmName, symbol: ticker, sectorKey, seed: cost };
+    if (ownerId === state.playerId) state.founded = founded;
+    if (player) player.founded = founded;
+    syncLocalPlayer();
+    return { ok: true, asset, cost, founderQty };
+  }
+
+  function rollCompanyOps(asset) {
+    const shock = (random() * 2 - 1) * 0.045;
+    const up = ["주간 매출이 예상보다 단단했습니다.", "신규 주문이 소폭 늘었습니다.", "고정비를 잘 막았습니다."];
+    const down = ["고정비가 발목을 잡았습니다.", "수주가 한 박자 밀렸습니다.", "재고가 조금 쌓였습니다."];
+    const flat = ["큰 이슈 없이 운영됐습니다.", "현금흐름은 평범했습니다.", "광고와 별개로 현장은 조용했습니다."];
+    asset.opsShock = shock;
+    asset.opsNote = shock > 0.012 ? up[Math.floor(random() * up.length)] : shock < -0.012 ? down[Math.floor(random() * down.length)] : flat[Math.floor(random() * flat.length)];
+    return shock;
+  }
+
+  function publishAd(playerId, slogan, claim) {
+    const player = state.players.find((item) => item.id === playerId);
+    const founded = playerId === state.playerId ? state.founded : player?.founded;
+    if (!founded) return { ok: false, err: "company" };
+    const asset = assetById(founded.assetId);
+    const actor = getActor(playerId);
+    if (!asset || !actor) return { ok: false, err: "company" };
+    if (playerId === state.playerId && state.adDone) return { ok: false, err: "once" };
+    if (asset.ad && asset.ad.week === state.week && asset.ad.season === state.season) {
+      return { ok: false, err: "once" };
+    }
+    if (actor.cash < AD_COST) return { ok: false, err: "cash" };
+    if (playerId === state.playerId) {
+      if (state.energy < 1) return { ok: false, err: "energy" };
+      state.energy -= 1;
+      state.adDone = true;
+    }
+    actor.cash = round1(actor.cash - AD_COST);
+    const text = String(slogan || "").trim().slice(0, 28);
+    asset.ad = {
+      slogan: text,
+      claim: AD_CLAIMS[claim] ? claim : "none",
+      week: state.week,
+      season: state.season,
+      owner: playerId,
+    };
+    asset.adWeeks = (asset.adWeeks || 0) + 1;
+    state.ads = state.assets.filter((item) => item.ad && item.ad.week === state.week && item.ad.season === state.season).map((item) => ({
+      assetId: item.id,
+      symbol: item.symbol,
+      name: item.name,
+      slogan: item.ad.slogan,
+      claim: item.ad.claim,
+    }));
+    attractAdFlow(asset);
+    syncLocalPlayer();
+    return { ok: true, asset };
+  }
+
+  function attractAdFlow(asset) {
+    const trust = asset.trust ?? 0.7;
+    const over = (asset.adWeeks || 0) >= 3;
+    const buyChance = Math.max(0.08, trust * 0.55 - (over ? 0.18 : 0));
+    state.players.filter((player) => player.bot && player.id !== asset.founderId).forEach((bot) => {
+      if (random() > buyChance) return;
+      const qty = 1 + Math.floor(random() * 5);
+      executeTrade(bot.id, asset.id, "buy", qty, { silent: true });
+    });
+    if (over && random() < 0.35) {
+      asset.trust = Math.max(0.15, (asset.trust || 0.7) - 0.12);
+      state.players.filter((player) => player.bot).slice(0, 2).forEach((bot) => {
+        const qty = Math.min(4, bot.holdings?.[asset.id]?.qty || 0);
+        if (qty > 0) executeTrade(bot.id, asset.id, "sell", qty, { silent: true });
+      });
+    }
+  }
+
+  function resolveAdTruth(asset) {
+    if (!asset.ad || asset.ad.week !== state.week) return;
+    const claim = asset.ad.claim;
+    let lie = false;
+    if (claim === "growth" && (asset.opsShock || 0) < -0.01) lie = true;
+    if (claim === "stable" && Math.abs(asset.opsShock || 0) > 0.03) lie = true;
+    if (claim === "dividend" && !(asset.dividend > 0)) lie = true;
+    if (lie) {
+      asset.trust = Math.max(0.12, (asset.trust || 0.7) * 0.72);
+      const dump = 2 + Math.floor(random() * 6);
+      applyFlow(asset, -dump);
+      asset.opsNote = `${asset.opsNote} 광고 주장과 실적이 어긋난다는 이야기가 돌았습니다.`;
+    } else if (claim !== "none") {
+      asset.trust = Math.min(1, (asset.trust || 0.7) + 0.04);
+    }
+  }
+
+  function spawnBots(count) {
+    const n = Math.max(3, Math.min(6, count || 4));
+    shuffled(BOT_INVESTORS).slice(0, n).forEach((bot, index) => {
+      if (state.players.some((item) => item.id === bot.id)) return;
+      const cash = 420 + Math.floor(random() * 220);
+      const player = {
+        id: bot.id,
+        name: bot.name,
+        cash,
+        holdings: freshHoldings(state.assets),
+        founded: null,
+        total: cash,
+        bot: true,
+      };
+      state.players.push(player);
+      const firm = BOT_FIRMS[index % BOT_FIRMS.length];
+      listCompany({
+        ownerId: bot.id,
+        ownerName: bot.name,
+        name: firm.name,
+        symbol: firm.symbol,
+        sectorKey: firm.sectorKey,
+        seed: Math.min(player.cash - 40, firm.seed),
+        bot: true,
+      });
+    });
+    syncLocalPlayer();
+  }
+
+  function clearBotTimers() {
+    botTimers.forEach((id) => clearTimeout(id));
+    botTimers = [];
+  }
+
+  function scheduleBots() {
+    clearBotTimers();
+    if (!isAuthority() || !state.active) return;
+    [900, 2400, 4800].forEach((delay) => {
+      botTimers.push(setTimeout(() => {
+        botTick();
+        renderAll();
+        if (state.playMode === "host") broadcastState();
+      }, delay));
+    });
+  }
+
+  function botTick() {
+    if (!isAuthority() || !state.active || state.locked) return;
+    state.players.filter((player) => player.bot).forEach((bot) => {
+      if (random() > 0.62) return;
+      const advertised = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week);
+      const pool = advertised.length && random() < 0.45 ? advertised : state.assets;
+      const asset = pool[Math.floor(random() * pool.length)];
+      if (!asset) return;
+      const holding = ensureHolding(bot.holdings, asset.id);
+      let side = random() > 0.5 ? "buy" : "sell";
+      if (asset.ad && (asset.trust || 0) > 0.6 && random() < 0.55) side = "buy";
+      if (asset.ad && (asset.trust || 0) < 0.35) side = "sell";
+      const qty = 1 + Math.floor(random() * 6);
+      if (side === "sell" && holding.qty < 1) side = "buy";
+      executeTrade(bot.id, asset.id, side, qty, { silent: true });
+    });
+    syncLocalPlayer();
+  }
+
+  function fallbackToSolo(reason) {
+    destroyNet();
+    state.playMode = "solo";
+    state.roomCode = "SOLO";
+    if (!state.players.some((item) => item.bot)) spawnBots(4);
+    toast("📡", "솔로로 전환", reason || "연결이 끊어져 봇 시장으로 이어갑니다.");
+    renderAll();
+  }
+
+  function destroyNet() {
+    try { net.conns.forEach((conn) => conn.close()); } catch { /* ignore */ }
+    try { net.hostConn?.close(); } catch { /* ignore */ }
+    try { net.peer?.destroy(); } catch { /* ignore */ }
+    net.peer = null;
+    net.conns = [];
+    net.hostConn = null;
+    net.connecting = false;
+  }
+
+  function sendTo(conn, payload) {
+    try { conn.send(payload); } catch { /* ignore */ }
+  }
+
+  function broadcastState(extra = {}) {
+    if (state.playMode !== "host") return;
+    syncLocalPlayer();
+    const snapshot = buildSnapshot();
+    net.conns.forEach((conn) => sendTo(conn, { type: "state", snapshot, ...extra }));
+  }
+
+  function buildSnapshot() {
+    return {
+      week: state.week,
+      season: state.season,
+      locked: state.locked,
+      seasonBreak: state.seasonBreak,
+      roomCode: state.roomCode,
+      modeKey: state.modeKey,
+      event: publicEvent(state.event),
+      assets: state.assets.map((asset) => ({
+        id: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        sector: asset.sector,
+        sectorKey: asset.sectorKey,
+        price: asset.price,
+        initialPrice: asset.initialPrice,
+        lastChange: asset.lastChange,
+        history: asset.history?.slice(-16) || [asset.price],
+        trend: asset.trend,
+        noise: asset.noise,
+        risk: asset.risk,
+        color: asset.color,
+        dividend: asset.dividend,
+        float: asset.float,
+        weekFlow: asset.weekFlow,
+        lastFlow: asset.lastFlow,
+        weekOpen: asset.weekOpen,
+        playerCompany: asset.playerCompany,
+        founderId: asset.founderId,
+        founderName: asset.founderName,
+        trust: asset.trust,
+        adWeeks: asset.adWeeks,
+        ad: asset.ad,
+        opsNote: asset.opsNote,
+      })),
+      ads: state.ads,
+      players: state.players.map((player) => ({
+        id: player.id,
+        name: player.name,
+        cash: player.cash,
+        holdings: cloneHoldings(player.holdings),
+        founded: player.founded,
+        total: playerTotal(player),
+        bot: !!player.bot,
+      })),
+    };
+  }
+
+  function applySnapshot(snapshot) {
+    if (!snapshot) return;
+    state.week = snapshot.week;
+    state.season = snapshot.season;
+    state.locked = snapshot.locked;
+    state.seasonBreak = snapshot.seasonBreak;
+    state.roomCode = snapshot.roomCode || state.roomCode;
+    state.event = snapshot.event;
+    state.assets = snapshot.assets || state.assets;
+    state.ads = snapshot.ads || [];
+    state.players = snapshot.players || state.players;
+    state.expected = {};
+    state.changes = {};
+    state.assets.forEach((asset) => ensureHolding(state.holdings, asset.id));
+    const me = state.players.find((item) => item.id === state.playerId);
+    if (me) {
+      state.cash = me.cash;
+      state.holdings = cloneHoldings(me.holdings);
+      state.founded = me.founded;
+      state.playerName = me.name || state.playerName;
+    }
+  }
+
+  function handleHostMessage(message, conn) {
+    if (!message || !isAuthority()) return;
+    if (message.type === "join") {
+      const incoming = message.player;
+      if (!incoming?.id) return;
+      if (incoming.id === state.playerId || state.players.some((item) => item.id === incoming.id && !item.bot)) {
+        sendTo(conn, { type: "reject", reason: "duplicate" });
+        return;
+      }
+      incoming.bot = false;
+      incoming.holdings = incoming.holdings || freshHoldings(state.assets);
+      state.assets.forEach((asset) => ensureHolding(incoming.holdings, asset.id));
+      incoming.total = playerTotal(incoming);
+      state.players.push(incoming);
+      broadcastState();
+      renderAll();
+      toast("🤝", "참가", `${incoming.name} 님이 방에 들어왔습니다.`);
+      return;
+    }
+    if (message.type === "trade") {
+      const result = executeTrade(message.playerId, message.assetId, message.side, message.qty, { silent: true });
+      if (message.playerId === state.playerId && result.ok) {
+        const asset = assetById(message.assetId);
+        if (asset) recordTrade(message.side, asset, message.qty, asset.price * message.qty);
+      }
+      broadcastState();
+      renderAll();
+      return;
+    }
+    if (message.type === "found") {
+      listCompany({ ...message.spec, ownerId: message.playerId });
+      broadcastState();
+      renderAll();
+      return;
+    }
+    if (message.type === "ad") {
+      publishAd(message.playerId, message.slogan, message.claim);
+      broadcastState();
+      renderAll();
+      return;
+    }
+    if (message.type === "wallet") {
+      const player = state.players.find((item) => item.id === message.playerId);
+      if (player && message.playerId !== state.playerId) {
+        player.cash = message.cash;
+        player.total = playerTotal(player);
+        broadcastState();
+        renderAll();
+      }
+    }
+  }
+
+  function handleClientMessage(message) {
+    if (!message) return;
+    if (message.type === "reject") {
+      toast("⛔", "입장 거부", message.reason === "duplicate" ? "이 아이디는 이미 방에 있습니다." : "방에 들어갈 수 없습니다.");
+      fallbackToSolo("중복 로그인으로 솔로로 전환합니다.");
+      return;
+    }
+    if (message.type === "state") {
+      const before = totalAssets();
+      applySnapshot(message.snapshot);
+      if (message.weekClosed) {
+        showWeekResult(totalAssets() - before, totalAssets(), message.dividend || 0);
+      }
+      if (message.weekStart) {
+        closeModal(els.weekModal);
+        resetLocalWeek();
+      }
+      renderAll();
+    }
+  }
+
+  function bindConn(conn, asHost) {
+    conn.on("data", (message) => {
+      if (asHost) handleHostMessage(message, conn);
+      else handleClientMessage(message);
+    });
+    conn.on("close", () => {
+      net.conns = net.conns.filter((item) => item !== conn);
+      if (!asHost) fallbackToSolo("방장과의 연결이 끊어졌습니다.");
+      else {
+        renderAll();
+        broadcastState();
+      }
+    });
+    conn.on("error", () => {
+      if (!asHost) fallbackToSolo("PeerJS 오류로 솔로로 전환합니다.");
+    });
+  }
+
+  function waitPeerOpen(peer) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout")), 8000);
+      peer.on("open", (id) => {
+        clearTimeout(timer);
+        resolve(id);
+      });
+      peer.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  async function startHostRoom() {
+    if (typeof Peer === "undefined") {
+      fallbackToSolo("PeerJS를 불러오지 못해 솔로로 시작합니다.");
+      beginLocalGame("solo");
+      return;
+    }
+    els.lobbyStatus.textContent = "방을 여는 중…";
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const code = makeRoomCode();
+      destroyNet();
+      try {
+        net.peer = new Peer(PEER_PREFIX + code);
+        await waitPeerOpen(net.peer);
+        state.playMode = "host";
+        state.roomCode = code;
+        net.peer.on("connection", (conn) => {
+          net.conns.push(conn);
+          bindConn(conn, true);
+          conn.on("open", () => broadcastState());
+        });
+        net.peer.on("disconnected", () => {
+          if (state.active) fallbackToSolo("방장 연결이 끊겼습니다.");
+        });
+        spawnBots(3);
+        closeModal(els.lobbyModal);
+        beginLocalGame("host");
+        toast("🔑", "방 생성", `참가 코드 ${code}`);
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    fallbackToSolo(lastErr ? "방을 열지 못해 솔로로 시작합니다." : "방 생성 실패");
+    beginLocalGame("solo");
+  }
+
+  async function joinHostRoom(code) {
+    const clean = String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    if (clean.length < 4) {
+      els.lobbyStatus.textContent = "4–6자 코드를 입력하세요.";
+      return;
+    }
+    if (typeof Peer === "undefined") {
+      fallbackToSolo("PeerJS를 불러오지 못했습니다.");
+      beginLocalGame("solo");
+      return;
+    }
+    els.lobbyStatus.textContent = "방에 접속하는 중…";
+    destroyNet();
+    try {
+      net.peer = new Peer();
+      await waitPeerOpen(net.peer);
+      net.hostConn = net.peer.connect(PEER_PREFIX + clean, { reliable: true });
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), 8000);
+        net.hostConn.on("open", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        net.hostConn.on("error", reject);
+      });
+      bindConn(net.hostConn, false);
+      state.playMode = "client";
+      state.roomCode = clean;
+      resetLocalWeek();
+      sendTo(net.hostConn, {
+        type: "join",
+        player: {
+          id: state.playerId,
+          name: state.playerName,
+          cash: state.cash,
+          holdings: cloneHoldings(state.holdings),
+          founded: state.founded,
+          bot: false,
+        },
+      });
+      closeModal(els.lobbyModal);
+      if (!state.event) {
+        state.event = {
+          category: "연결", icon: "📡", title: "호스트 시세를 받는 중",
+          description: "방장의 시장 상태가 곧 동기화됩니다.",
+          themes: ["멀티플레이"], note: "광고와 수급을 보고 판단하세요.",
+        };
+      }
+      revealDesk();
+      toast("🚪", "입장", `방 ${clean}에 참가했습니다.`);
+    } catch {
+      fallbackToSolo("방을 찾지 못해 솔로로 시작합니다.");
+      beginLocalGame("solo");
+    }
+  }
+
+  function sendWallet() {
+    if (state.playMode !== "client" || !net.hostConn) return;
+    sendTo(net.hostConn, {
+      type: "wallet",
+      playerId: state.playerId,
+      cash: state.cash,
+    });
+  }
+
+  function hideDesk() {
+    els.game.hidden = true;
+    els.game.classList.add("is-locked");
+    if (els.marketNav) els.marketNav.hidden = true;
+  }
+
+  function fillFoundSectors() {
+    els.foundSector.innerHTML = SECTORS.map((item) => `<option value="${item.key}">${item.label}</option>`).join("");
+  }
+
+  function openFoundModal() {
+    if (!state.active || state.locked) return;
+    if (state.founded) {
+      toast("🏢", "이미 설립함", "회사는 계정당 한 곳만 상장할 수 있습니다.");
+      return;
+    }
+    els.foundError.hidden = true;
+    els.foundName.value = "";
+    els.foundSymbol.value = "";
+    els.foundSeed.value = String(Math.min(120, Math.max(MIN_SEED, Math.round(state.cash * 0.18))));
+    fillFoundSectors();
+    openModal(els.foundModal);
+  }
+
+  function openAdModal() {
+    if (!state.active || state.locked) return;
+    if (!state.founded) {
+      toast("📢", "회사 없음", "먼저 회사를 설립해야 광고를 집행할 수 있습니다.");
+      return;
+    }
+    if (state.adDone) {
+      toast("📢", "이번 주 완료", "광고는 주당 한 번입니다.");
+      return;
+    }
+    els.adError.hidden = true;
+    els.adSlogan.value = "";
+    openModal(els.adModal);
+  }
+
+  function submitFound(event) {
+    event.preventDefault();
+    const spec = {
+      ownerId: state.playerId,
+      ownerName: state.playerName,
+      name: els.foundName.value,
+      symbol: els.foundSymbol.value,
+      sectorKey: els.foundSector.value,
+      seed: Number(els.foundSeed.value),
+    };
+    if (state.playMode === "client") {
+      sendTo(net.hostConn, { type: "found", playerId: state.playerId, spec });
+      closeModal(els.foundModal);
+      return;
+    }
+    const result = listCompany(spec);
+    if (!result.ok) {
+      const map = {
+        once: "이미 회사를 보유하고 있습니다.",
+        ticker: "티커는 영문 2–4자입니다.",
+        dup: "이미 있는 티커입니다.",
+        name: "상호를 2자 이상 입력하세요.",
+        cash: "시드 현금이 부족합니다.",
+      };
+      els.foundError.hidden = false;
+      els.foundError.textContent = map[result.err] || "설립에 실패했습니다.";
+      return;
+    }
+    closeModal(els.foundModal);
+    toast("🏛️", "상장", `${result.asset.name}(${result.asset.symbol}) · 창업 ${result.founderQty}주`);
+    if (state.playMode === "host") broadcastState();
+    renderAll();
+  }
+
+  function submitAd(event) {
+    event.preventDefault();
+    if (state.playMode === "client") {
+      if (state.energy < 1) {
+        els.adError.hidden = false;
+        els.adError.textContent = "에너지가 부족합니다.";
+        return;
+      }
+      if (state.cash < AD_COST) {
+        els.adError.hidden = false;
+        els.adError.textContent = "광고비 18만원이 필요합니다.";
+        return;
+      }
+      state.energy -= 1;
+      state.adDone = true;
+      sendTo(net.hostConn, {
+        type: "ad",
+        playerId: state.playerId,
+        slogan: els.adSlogan.value,
+        claim: els.adClaim.value,
+      });
+      closeModal(els.adModal);
+      renderAll();
+      return;
+    }
+    const result = publishAd(state.playerId, els.adSlogan.value, els.adClaim.value);
+    if (!result.ok) {
+      const map = {
+        company: "설립한 회사가 없습니다.",
+        once: "이번 주 광고는 이미 집행했습니다.",
+        cash: "광고비 18만원이 필요합니다.",
+        energy: "에너지가 부족합니다.",
+      };
+      els.adError.hidden = false;
+      els.adError.textContent = map[result.err] || "광고를 올리지 못했습니다.";
+      return;
+    }
+    closeModal(els.adModal);
+    toast("📣", "광고 게재", `${result.asset.symbol} · ${els.adSlogan.value}`);
+    if (state.playMode === "host") broadcastState();
+    renderAll();
+  }
+
+  function renderRoom() {
+    if (!els.roomCodeLabel) return;
+    els.roomCodeLabel.textContent = state.roomCode || (state.playMode === "solo" ? "SOLO" : "—");
+    els.playerList.innerHTML = state.players.map((player) => {
+      const company = player.founded?.symbol || "미상장";
+      const tag = player.bot ? `<span class="bot-tag">봇</span>` : (player.id === state.playerId ? `<span class="bot-tag">나</span>` : "");
+      return `<li><b>${player.name}${tag}</b><small>${company} · ${money(player.total || 0)}</small></li>`;
+    }).join("");
+    if (els.closeMarketHint) {
+      els.closeMarketHint.textContent = state.playMode === "client"
+        ? "방장이 장을 마감하면 뉴스와 수급이 가격에 반영됩니다."
+        : "장 마감 후 이번 주 뉴스와 수급이 가격에 반영됩니다.";
+    }
+    if (els.closeMarket) {
+      els.closeMarket.disabled = !state.active || state.locked || state.playMode === "client";
+    }
+    if (els.foundButton) els.foundButton.disabled = !state.active || state.locked || !!state.founded;
+    if (els.adButton) els.adButton.disabled = !state.active || state.locked || !state.founded || state.adDone;
+  }
+
+  function renderAds() {
+    const ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season);
+    if (!els.adTicker) return;
+    if (!ads.length) {
+      els.adTicker.textContent = "아직 올라온 광고가 없습니다. 창업자가 집행하면 이곳에 뜹니다.";
+      els.adList.innerHTML = "";
+      return;
+    }
+    els.adTicker.textContent = ads.map((asset) => `[${asset.symbol}] ${asset.ad.slogan}`).join("   ·   ");
+    els.adList.innerHTML = ads.map((asset) => `
+      <li>
+        <span class="ad-sym">${asset.symbol} · ${AD_CLAIMS[asset.ad.claim] || ""}</span>
+        <b>${asset.ad.slogan}</b>
+        <small>${asset.founderName || "창업자"} 집행 · 사실 여부는 미확인</small>
+      </li>
+    `).join("");
+  }
+
+  function resetLocalWeek() {
+    state.analyzed = new Set();
+    state.intel = {};
+    state.jobsDone = new Set();
+    state.intelDone = new Set();
+    state.playDone = new Set();
+    state.energy = state.energyMax;
+    state.weekJobs = shuffled(JOBS).slice(0, 3);
+    state.adDone = false;
+    state.locked = false;
+  }
+
+  function beginLocalGame(mode) {
+    state.playMode = mode === "host" ? "host" : "solo";
+    if (!state.roomCode) state.roomCode = mode === "host" ? state.roomCode : "SOLO";
+    if (mode !== "host" && mode !== "client") state.roomCode = "SOLO";
+    if (!state.players.some((item) => item.bot) && state.playMode === "solo") spawnBots(4);
+    syncLocalPlayer();
+    prepareWeek();
+    revealDesk();
+    els.game.scrollIntoView({ behavior: "smooth", block: "start" });
+    tone(440, .08, "square");
+    setTimeout(() => tone(660, .12, "square"), 80);
   }
 
   function money(value) {
@@ -652,7 +1740,8 @@
 
   function totalAssets() {
     return state.cash + state.assets.reduce((sum, asset) => {
-      return sum + asset.price * state.holdings[asset.id].qty;
+      const holding = ensureHolding(state.holdings, asset.id);
+      return sum + asset.price * holding.qty;
     }, 0);
   }
 
@@ -665,26 +1754,34 @@
   }
 
   function prepareWeek() {
-    state.event = state.eventDeck[state.week - 1];
+    state.event = state.eventDeck[state.week - 1] || shuffled(EVENTS)[0];
     state.expected = {};
     state.changes = {};
-    state.analyzed = new Set();
-    state.intel = {};
-    state.jobsDone = new Set();
-    state.intelDone = new Set();
-    state.playDone = new Set();
-    state.energy = state.energyMax;
-    state.weekJobs = shuffled(JOBS).slice(0, 3);
-
+    resetLocalWeek();
     state.assets.forEach((asset) => {
-      const eventEffect = state.event.effects[asset.id] || 0;
+      asset.weekOpen = asset.price;
+      asset.weekFlow = 0;
+      if (asset.ad && (asset.ad.week !== state.week || asset.ad.season !== state.season)) {
+        asset.ad = null;
+      }
+      const eventEffect = state.event.effects?.[asset.sectorKey || asset.id] || state.event.effects?.[asset.id] || 0;
+      const newsWeight = asset.playerCompany ? 0.28 : 1;
       const momentum = asset.lastChange * .08;
-      const expected = eventEffect + asset.trend + momentum;
-      const noise = (random() * 2 - 1) * asset.noise;
+      const expected = eventEffect * newsWeight + asset.trend + momentum;
+      const noise = (random() * 2 - 1) * asset.noise * (asset.playerCompany ? 0.45 : 1);
       state.expected[asset.id] = expected;
       state.changes[asset.id] = Math.max(-.28, Math.min(.28, expected + noise));
     });
-    state.locked = false;
+    state.ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season).map((asset) => ({
+      assetId: asset.id,
+      symbol: asset.symbol,
+      name: asset.name,
+      slogan: asset.ad.slogan,
+      claim: asset.ad.claim,
+    }));
+    syncLocalPlayer();
+    if (isAuthority()) scheduleBots();
+    if (state.playMode === "host") broadcastState({ weekStart: true });
     renderAll();
   }
 
@@ -703,7 +1800,9 @@
     renderBadges();
     renderLog();
     renderActivities();
-    els.closeMarket.disabled = !state.active || state.locked;
+    renderRoom();
+    renderAds();
+    els.closeMarket.disabled = !state.active || state.locked || state.playMode === "client";
   }
 
   function renderSummary() {
@@ -713,7 +1812,7 @@
     const cashRatio = total > 0 ? state.cash / total : 0;
     const progress = total / state.goal;
 
-    els.weekLabel.textContent = `${state.week}주차`;
+    els.weekLabel.textContent = `시즌 ${state.season} · ${state.week}주차`;
     els.difficultyLabel.textContent = state.config.name;
     els.totalAssets.textContent = money(total);
     els.cash.textContent = money(state.cash);
@@ -731,8 +1830,9 @@
 
   function renderNews() {
     const event = state.event;
+    if (!event) return;
     els.newsCategory.textContent = event.category;
-    els.newsDate.textContent = `WEEK ${String(state.week).padStart(2, "0")}`;
+    els.newsDate.textContent = `S${state.season} · WEEK ${String(state.week).padStart(2, "0")}`;
     els.newsIcon.textContent = event.icon;
     els.newsTitle.textContent = event.title;
     els.newsDescription.textContent = event.description;
@@ -748,24 +1848,30 @@
 
   function renderAssets() {
     els.assetList.innerHTML = state.assets.map((asset) => {
-      const holding = state.holdings[asset.id];
+      const holding = ensureHolding(state.holdings, asset.id);
       const forecast = forecastFor(asset);
       const maxBuy = Math.floor(state.cash / asset.price);
       const disabled = !state.active || state.locked;
       const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
       const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
+      const flow = flowHint(asset);
+      const founder = asset.playerCompany ? `<span class="founder-tag">${asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업")} 상장</span>` : "";
+      const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${asset.ad.slogan}</span>` : "";
+      const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${asset.opsNote}</span>` : "";
 
       return `
-        <article class="asset-row" data-id="${asset.id}" style="--asset-color:${asset.color}">
+        <article class="asset-row ${asset.playerCompany ? "is-player" : ""}" data-id="${asset.id}" style="--asset-color:${asset.color}">
           <div class="asset-name">
             <span class="asset-symbol">${asset.symbol}</span>
             <strong>${asset.name}</strong>
             <small>${asset.sector}</small>
+            ${founder}${adMark}${ops}
             <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
           </div>
           <div class="asset-price">
             <strong>${money(asset.price)}</strong>
             <span class="${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난주</span>
+            <span class="flow-pill ${flow.type}">${flow.text}</span>
           </div>
           <div class="asset-forecast">
             <span class="forecast-pill ${forecast.type}">${forecast.text}</span>
@@ -797,7 +1903,7 @@
     const total = totalAssets();
     const invested = holdingsValue();
     const ratio = total > 0 ? invested / total : 0;
-    const held = state.assets.filter((asset) => state.holdings[asset.id].qty > 0);
+    const held = state.assets.filter((asset) => ensureHolding(state.holdings, asset.id).qty > 0);
     els.holdingCount.textContent = `${held.length}개 자산`;
     els.investedRatio.textContent = `${Math.round(ratio * 100)}%`;
 
@@ -835,7 +1941,7 @@
   }
 
   function missionComplete(id) {
-    if (id === "diversify") return state.assets.filter((asset) => state.holdings[asset.id].qty > 0).length >= 3;
+    if (id === "diversify") return state.assets.filter((asset) => ensureHolding(state.holdings, asset.id).qty > 0).length >= 3;
     if (id === "profit") return returnRate() >= .25;
     if (id === "cash") return state.cashSafeWeeks >= 3;
     if (id === "research") return state.analyses >= 3;
@@ -882,7 +1988,7 @@
   }
 
   function checkBadges() {
-    const heldCount = state.assets.filter((asset) => state.holdings[asset.id].qty > 0).length;
+    const heldCount = state.assets.filter((asset) => ensureHolding(state.holdings, asset.id).qty > 0).length;
     if (state.trades >= 1) unlockBadge("first");
     if (heldCount >= 4) unlockBadge("basket");
     if (state.profitableSales >= 1) unlockBadge("profitSell");
@@ -923,34 +2029,45 @@
   }
 
   function buy(id, qty) {
-    const asset = assetById(id);
-    const cost = asset.price * qty;
-    if (!state.active || state.locked || cost > state.cash) {
+    if (!state.active || state.locked) {
+      toast("⚠️", "주문 실패", "장이 열려 있는지 확인하세요.");
+      tone(130, .12, "sawtooth");
+      return;
+    }
+    if (state.playMode === "client") {
+      const asset = assetById(id);
+      sendTo(net.hostConn, { type: "trade", playerId: state.playerId, assetId: id, side: "buy", qty });
+      if (asset) recordTrade("buy", asset, qty, asset.price * qty);
+      return;
+    }
+    const result = executeTrade(state.playerId, id, "buy", qty);
+    if (!result.ok) {
       toast("⚠️", "주문 실패", "보유 현금과 주문 수량을 확인하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
-    const holding = state.holdings[id];
-    holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
-    holding.qty += qty;
-    state.cash -= cost;
-    recordTrade("buy", asset, qty, cost);
+    if (state.playMode === "host") broadcastState();
   }
 
   function sell(id, qty) {
-    const asset = assetById(id);
-    const holding = state.holdings[id];
-    if (!state.active || state.locked || qty > holding.qty) {
+    if (!state.active || state.locked) {
+      toast("⚠️", "주문 실패", "장이 열려 있는지 확인하세요.");
+      tone(130, .12, "sawtooth");
+      return;
+    }
+    if (state.playMode === "client") {
+      const asset = assetById(id);
+      sendTo(net.hostConn, { type: "trade", playerId: state.playerId, assetId: id, side: "sell", qty });
+      if (asset) recordTrade("sell", asset, qty, asset.price * qty);
+      return;
+    }
+    const result = executeTrade(state.playerId, id, "sell", qty);
+    if (!result.ok) {
       toast("⚠️", "주문 실패", "보유 수량을 확인하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
-    const proceeds = asset.price * qty;
-    if (asset.price > holding.avg) state.profitableSales += 1;
-    holding.qty -= qty;
-    state.cash += proceeds;
-    if (holding.qty === 0) holding.avg = 0;
-    recordTrade("sell", asset, qty, proceeds);
+    if (state.playMode === "host") broadcastState();
   }
 
   function recordTrade(type, asset, qty, total) {
@@ -960,6 +2077,7 @@
     tone(type === "buy" ? 480 : 330, .07, "square");
     checkBadges();
     checkMissions();
+    syncLocalPlayer();
     renderAll();
   }
 
@@ -977,7 +2095,7 @@
   }
 
   function strongestAssets(count = 3) {
-    return [...state.assets].sort((a, b) => Math.abs(state.expected[b.id]) - Math.abs(state.expected[a.id])).slice(0, count);
+    return [...state.assets].sort((a, b) => Math.abs(state.expected[b.id] || 0) - Math.abs(state.expected[a.id] || 0)).slice(0, count);
   }
 
   function directionOf(value) {
@@ -987,7 +2105,9 @@
   }
 
   function setIntel(assetId, truthful, precise) {
-    const actual = state.changes[assetId];
+    const actual = state.changes[assetId] != null
+      ? state.changes[assetId]
+      : ((assetById(assetId)?.weekFlow || 0) / Math.max(40, assetById(assetId)?.float || 400)) * 0.4;
     const used = truthful ? actual : -actual * (.6 + random() * .5);
     const asset = assetById(assetId);
     if (precise) {
@@ -1049,6 +2169,7 @@
     checkMissions();
     checkBadges();
     renderAll();
+    sendWallet();
     return reward;
   }
 
@@ -1115,6 +2236,7 @@
       checkMissions();
       checkBadges();
       renderAll();
+      sendWallet();
     } else if (kind === "play") {
       const item = PLAYS.find((entry) => entry.id === id);
       if (!item || state.playDone.has(id) || !spendEnergy(item.energy)) return;
@@ -1164,6 +2286,7 @@
       checkMissions();
       checkBadges();
       renderAll();
+      sendWallet();
     }
     state.currentPlay = null;
   }
@@ -1337,23 +2460,46 @@
 
   function closeMarket() {
     if (!state.active || state.locked) return;
+    if (state.playMode === "client") {
+      toast("⏳", "대기", "방장이 장을 마감합니다.");
+      return;
+    }
+    clearBotTimers();
+    botTick();
     state.locked = true;
     const before = totalAssets();
-    let dividend = 0;
+    let localDividend = 0;
 
     state.assets.forEach((asset) => {
-      const change = state.changes[asset.id];
-      asset.price = Math.max(5, Math.round(asset.price * (1 + change) * 10) / 10);
-      asset.lastChange = change;
+      if (asset.playerCompany) rollCompanyOps(asset);
+      const newsChange = state.changes[asset.id] || 0;
+      const extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
+      asset.price = Math.max(5, round1(asset.price * (1 + extra)));
+      if (asset.playerCompany) resolveAdTruth(asset);
+      const open = asset.weekOpen || asset.history[asset.history.length - 1] || asset.price;
+      asset.lastChange = open > 0 ? (asset.price - open) / open : extra;
+      asset.lastFlow = asset.weekFlow || 0;
       asset.history.push(asset.price);
-      if (state.week % 4 === 0 && asset.dividend > 0) {
-        dividend += asset.price * state.holdings[asset.id].qty * asset.dividend;
-      }
     });
 
-    if (dividend > 0) {
-      state.cash += dividend;
-      toast("💰", "분기 배당 입금", `${money(dividend)}이 현금 계좌에 들어왔습니다.`);
+    if (state.week % 4 === 0) {
+      state.players.forEach((player) => {
+        let dividend = 0;
+        state.assets.forEach((asset) => {
+          if (!(asset.dividend > 0)) return;
+          const qty = (player.id === state.playerId ? state.holdings : player.holdings)?.[asset.id]?.qty || 0;
+          dividend += asset.price * qty * asset.dividend;
+        });
+        if (dividend > 0) {
+          if (player.id === state.playerId) {
+            state.cash += dividend;
+            localDividend += dividend;
+          } else {
+            player.cash += dividend;
+          }
+        }
+      });
+      if (localDividend > 0) toast("💰", "분기 배당 입금", `${money(localDividend)}이 현금 계좌에 들어왔습니다.`);
     }
 
     const after = totalAssets();
@@ -1361,37 +2507,57 @@
     if (cashRatio >= .3) state.cashSafeWeeks += 1;
     checkMissions();
     checkBadges();
-    showWeekResult(after - before, after, dividend);
+    syncLocalPlayer();
+    showWeekResult(after - before, after, localDividend);
+    if (state.playMode === "host") broadcastState({ weekClosed: true, dividend: localDividend });
     renderAll();
   }
 
   function showWeekResult(weekProfit, total, dividend) {
-    els.weekResultLabel.textContent = `WEEK ${String(state.week).padStart(2, "0")} CLOSED`;
+    els.weekResultLabel.textContent = `S${state.season} · WEEK ${String(state.week).padStart(2, "0")} CLOSED`;
+    if (els.weekResultTitle) {
+      els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 폐장` : "이번 주 시장 마감";
+    }
     els.weekSummary.textContent = dividend > 0
       ? `시장 변동과 함께 ${money(dividend)}의 분기 배당이 반영되었습니다.`
-      : "예고된 뉴스와 소폭의 시장 변동성이 가격에 반영되었습니다.";
+      : "뉴스·수급·광고가 가격에 반영되었습니다. 매수세는 다음 주를 보장하지 않습니다.";
     els.weekResults.innerHTML = state.assets.map((asset) => {
       const type = asset.lastChange > 0 ? "up" : asset.lastChange < 0 ? "down" : "";
+      const extra = asset.playerCompany && asset.opsNote ? `<small>${asset.opsNote}</small>` : "";
       return `
         <div class="week-result-item" style="--color:${asset.color}">
           <i>${asset.symbol}</i>
-          <div><span>${asset.name}</span><b class="${type}">${percent(asset.lastChange)}</b></div>
+          <div><span>${asset.name}</span><b class="${type}">${percent(asset.lastChange)}</b>${extra}</div>
         </div>
       `;
     }).join("");
     els.weekProfit.textContent = signedMoney(weekProfit);
     els.weekProfit.style.color = weekProfit >= 0 ? "var(--red)" : "var(--green)";
     els.weekTotal.textContent = money(total);
-    state.terminal = state.week >= MAX_WEEKS;
-    els.nextWeek.innerHTML = state.terminal ? `12주 최종 리포트 <span>→</span>` : `다음 주 뉴스 확인 <span>→</span>`;
+    state.seasonBreak = state.week >= MAX_WEEKS;
+    state.terminal = false;
+    els.nextWeek.innerHTML = state.seasonBreak ? `다음 시즌 개장 <span>→</span>` : `다음 주 뉴스 확인 <span>→</span>`;
     openModal(els.weekModal);
     tone(weekProfit >= 0 ? 620 : 170, .14, weekProfit >= 0 ? "square" : "sawtooth");
   }
 
+  function startNextSeason() {
+    saveBest(returnRate());
+    state.season += 1;
+    state.week = 1;
+    state.seasonBreak = false;
+    state.eventDeck = shuffled(EVENTS).slice(0, MAX_WEEKS);
+    state.goal = Math.round(state.goal * 1.12);
+    toast("🌅", `시즌 ${state.season} 개장`, "현금·보유·회사는 그대로입니다. 목표만 조금 높아졌습니다.");
+    prepareWeek();
+    els.game.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function nextWeek() {
     closeModal(els.weekModal);
-    if (state.terminal) {
-      finishGame();
+    if (state.playMode === "client") return;
+    if (state.seasonBreak) {
+      startNextSeason();
       return;
     }
     state.week += 1;
@@ -1442,15 +2608,22 @@
     if (els.marketNav) els.marketNav.hidden = false;
   }
 
+  function bootRun() {
+    destroyNet();
+    clearBotTimers();
+    state = createState(selectedMode, true);
+    state.playerId = session.id;
+    state.playerName = session.nick;
+    syncLocalPlayer();
+  }
+
   function startGame() {
+    if (!requireSession()) return;
     closeModal(els.setupModal);
     closeModal(els.endModal);
-    state = createState(selectedMode, true);
-    prepareWeek();
-    revealDesk();
-    els.game.scrollIntoView({ behavior: "smooth", block: "start" });
-    tone(440, .08, "square");
-    setTimeout(() => tone(660, .12, "square"), 80);
+    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 솔로 또는 멀티플레이를 고르세요.`;
+    if (els.lobbyStatus) els.lobbyStatus.textContent = "";
+    openModal(els.lobbyModal);
   }
 
   function openModal(modal) {
@@ -1459,9 +2632,14 @@
     requestAnimationFrame(() => $("button", modal)?.focus());
   }
 
+  function allModals() {
+    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.adModal].filter(Boolean);
+  }
+
   function closeModal(modal) {
+    if (!modal) return;
     modal.hidden = true;
-    if (els.setupModal.hidden && els.weekModal.hidden && els.endModal.hidden && els.activityModal.hidden) {
+    if (allModals().every((item) => item.hidden)) {
       document.body.classList.remove("modal-open");
     }
   }
@@ -1515,12 +2693,26 @@
     els.bestRecord.textContent = percent(rate);
   }
 
-  els.openSetup.addEventListener("click", () => openModal(els.setupModal));
-  els.restart.addEventListener("click", () => openModal(els.setupModal));
-  els.playAgain.addEventListener("click", () => {
-    closeModal(els.endModal);
+  els.openSetup.addEventListener("click", () => {
+    if (!requireSession()) return;
     openModal(els.setupModal);
   });
+  els.restart.addEventListener("click", () => {
+    if (!requireSession()) return;
+    openModal(els.setupModal);
+  });
+  els.playAgain.addEventListener("click", () => {
+    closeModal(els.endModal);
+    if (!requireSession()) return;
+    openModal(els.setupModal);
+  });
+  if (els.continueSeason) {
+    els.continueSeason.addEventListener("click", () => {
+      closeModal(els.endModal);
+      state.active = true;
+      startNextSeason();
+    });
+  }
   els.difficulties.forEach((button) => {
     button.addEventListener("click", () => {
       selectedMode = button.dataset.mode;
@@ -1530,6 +2722,18 @@
   els.start.addEventListener("click", startGame);
   $$("[data-close='setup']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.setupModal));
+  });
+  $$("[data-close='auth']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.authModal));
+  });
+  $$("[data-close='lobby']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.lobbyModal));
+  });
+  $$("[data-close='found']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.foundModal));
+  });
+  $$("[data-close='ad']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.adModal));
   });
   els.nextWeek.addEventListener("click", nextWeek);
   els.closeMarket.addEventListener("click", closeMarket);
@@ -1543,6 +2747,52 @@
     els.sound.textContent = soundOn ? "◖))" : "×";
     els.sound.setAttribute("aria-label", soundOn ? "효과음 끄기" : "효과음 켜기");
     if (soundOn) tone(520, .07);
+  });
+  els.accountButton.addEventListener("click", () => {
+    if (session) logout();
+    else {
+      authNext = null;
+      setAuthMode("login");
+      openModal(els.authModal);
+    }
+  });
+  $$(".auth-tab").forEach((tab) => {
+    tab.addEventListener("click", () => setAuthMode(tab.dataset.auth));
+  });
+  els.authForm.addEventListener("submit", (event) => {
+    submitAuth(event).catch(() => showAuthError("인증에 실패했습니다."));
+  });
+  els.lobbySolo.addEventListener("click", () => {
+    if (!requireSession()) return;
+    bootRun();
+    closeModal(els.lobbyModal);
+    beginLocalGame("solo");
+  });
+  els.lobbyHost.addEventListener("click", () => {
+    if (!requireSession()) return;
+    bootRun();
+    startHostRoom();
+  });
+  els.lobbyJoin.addEventListener("click", () => {
+    if (!requireSession()) return;
+    bootRun();
+    joinHostRoom(els.joinCode.value);
+  });
+  els.copyRoom.addEventListener("click", async () => {
+    const code = state.roomCode || "";
+    try {
+      await navigator.clipboard.writeText(code);
+      toast("📋", "복사됨", `방 코드 ${code}`);
+    } catch {
+      toast("📋", "방 코드", code || "SOLO");
+    }
+  });
+  els.foundButton.addEventListener("click", openFoundModal);
+  els.adButton.addEventListener("click", openAdModal);
+  els.foundForm.addEventListener("submit", submitFound);
+  els.adForm.addEventListener("submit", submitAd);
+  els.foundSymbol.addEventListener("input", () => {
+    els.foundSymbol.value = els.foundSymbol.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
   });
 
   document.querySelectorAll(".activity-tab").forEach((tab) => {
@@ -1583,6 +2833,10 @@
 
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !els.setupModal.hidden) closeModal(els.setupModal);
+    if (event.key === "Escape" && !els.authModal.hidden) closeModal(els.authModal);
+    if (event.key === "Escape" && !els.lobbyModal.hidden) closeModal(els.lobbyModal);
+    if (event.key === "Escape" && !els.foundModal.hidden) closeModal(els.foundModal);
+    if (event.key === "Escape" && !els.adModal.hidden) closeModal(els.adModal);
     if (event.key === "Escape" && !els.activityModal.hidden) {
       if (state.currentPlay) finishMiniGame(0.12);
       else closeModal(els.activityModal);
@@ -1593,6 +2847,9 @@
     }
   });
 
+  session = readSession();
+  renderAccount();
+  fillFoundSectors();
   state = createState("rookie", false);
   prepareWeek();
   renderBest();
