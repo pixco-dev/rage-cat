@@ -5,11 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0e1915">
   <meta name="description" content="회사를 설립하고, 광고를 걸고, 서로 투자하는 무한 시즌 시장 시뮬레이션">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://pixco-dev.github.io/rage-cat/">
+  <meta property="og:title" content="불장연구소 — 무한 시즌 투자">
+  <meta property="og:description" content="감 말고 근거로, 월급을 굴려라. 모두가 같은 시장에서 사고파는 실시간 투자 시뮬레이션.">
+  <meta property="og:image" content="https://pixco-dev.github.io/rage-cat/og.png">
+  <meta property="og:image:width" content="1730">
+  <meta property="og:image:height" content="909">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="불장연구소 — 무한 시즌 투자">
+  <meta name="twitter:description" content="감 말고 근거로, 월급을 굴려라.">
+  <meta name="twitter:image" content="https://pixco-dev.github.io/rage-cat/og.png">
   <title>불장연구소 — 무한 시즌 투자</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260903ah">
+  <link rel="stylesheet" href="style.css?v=20260903multi">
 </head>
 <body>
   <header class="site-header">
@@ -91,7 +103,7 @@
           <span>MARKET</span>
           <b id="room-code-label">전 세계 단일 시장</b>
           <small id="period-clock">표준시 확인 중</small>
-          <small id="player-count"></small>
+          <small id="player-count" role="status" aria-live="polite">0명 접속 · 연결 중</small>
         </div>
         <ol class="rank-strip" id="rank-strip" aria-label="자산 TOP 5"></ol>
         <div class="room-actions">
@@ -461,6 +473,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
   <script src="firebase-config.js?v=20260903ah"></script>
-  <script src="game.js?v=20260903ah"></script>
+  <script src="game.js?v=20260903multi"></script>
 </body>
 </html>

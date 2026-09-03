@@ -2,7 +2,30 @@
   "rules": {
     "bull-lab": {
       ".read": true,
-      ".write": true
+      ".write": true,
+      "handles": {
+        "$handle": {
+          ".validate": "newData.hasChildren(['id', 'nick', 'createdAt']) && newData.child('id').isString() && newData.child('id').val().length >= 3 && newData.child('id').val().length <= 16 && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('createdAt').isNumber()"
+        }
+      },
+      "presence": {
+        "$player": {
+          "$client": {
+            ".validate": "newData.hasChildren(['playerId', 'playerName', 'clientId', 'online', 'lastSeen']) && newData.child('playerId').isString() && newData.child('playerId').val().length <= 16 && newData.child('playerName').isString() && newData.child('playerName').val().length <= 16 && newData.child('clientId').isString() && newData.child('clientId').val().length <= 64 && newData.child('online').isBoolean() && newData.child('lastSeen').isNumber()"
+          }
+        }
+      },
+      "world": {
+        "chatRooms": {
+          "$room": {
+            "messages": {
+              "$message": {
+                ".validate": "newData.hasChildren(['id', 'authorId', 'authorName', 'text', 'createdAt']) && newData.child('id').isString() && newData.child('authorId').isString() && newData.child('authorId').val().length <= 16 && newData.child('authorName').isString() && newData.child('authorName').val().length <= 16 && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 80 && newData.child('createdAt').isNumber()"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

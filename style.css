@@ -2438,6 +2438,42 @@ body.modal-open {
   letter-spacing: 0;
 }
 
+#player-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-top: 1px;
+  color: #9aa59e;
+}
+
+#player-count::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6f7b74;
+  box-shadow: 0 0 0 3px rgba(255,255,255,.05);
+  content: "";
+}
+
+#player-count.is-online {
+  color: var(--lime);
+}
+
+#player-count.is-online::before {
+  background: var(--lime);
+  box-shadow: 0 0 0 3px rgba(205,255,70,.12), 0 0 12px rgba(205,255,70,.45);
+}
+
+#player-count.is-reconnecting::before {
+  background: #f0a34a;
+  animation: sync-pulse 1.25s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  50% { opacity: .35; }
+}
+
 .room-code-wrap button,
 .room-actions button {
   cursor: pointer;

@@ -8,9 +8,14 @@
   const AD_COST = 18;
   const MIN_SEED = 80;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
+  const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
+  const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
   const FETCH_MS = 8000;
   const POLL_MS = 8000;
   const KST_POLL_MS = 45000;
+  const PRESENCE_HEARTBEAT_MS = 20000;
+  const PRESENCE_STALE_MS = 70000;
+  const SETTLEMENT_LOCK_MS = 60000;
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
   const TICK_MS = 1000;
@@ -689,6 +694,19 @@
   let pendingAdImage = "";
   let activeChatRoomId = "";
   let selectedChartId = "";
+  const clientId = (() => {
+    const key = "bull-lab-client-v1";
+    try {
+      let value = sessionStorage.getItem(key);
+      if (!value) {
+        value = window.crypto?.randomUUID?.() || `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        sessionStorage.setItem(key, value);
+      }
+      return value;
+    } catch {
+      return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+  })();
   const worldSync = {
     revision: 0,
     updatedAt: 0,
@@ -700,6 +718,7 @@
     clockTimer: null,
     kstTimer: null,
     chartTimer: null,
+    presenceTimer: null,
     touched: new Set(),
     chatRooms: [],
     seenPlayers: [],
@@ -707,6 +726,15 @@
     eventKey: 0,
     botsSpawned: false,
     online: false,
+    connected: false,
+    presence: [],
+    presenceRef: null,
+    presenceRootRef: null,
+    presenceHandler: null,
+    connectedRef: null,
+    connectedHandler: null,
+    needsSeed: false,
+    pendingTrades: new Set(),
     lastToastAt: 0,
     entering: false,
     inMarket: false,
@@ -864,6 +892,19 @@
     }).filter(Boolean);
   }
 
+  function normalizeChatRoom(room) {
+    if (!room || typeof room !== "object") return null;
+    return {
+      ...room,
+      messages: listFromMap(room.messages).sort((a, b) => {
+        const at = Number(a.createdAt || 0);
+        const bt = Number(b.createdAt || 0);
+        if (at !== bt) return at - bt;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      }).slice(-CHAT_CAP),
+    };
+  }
+
   function worldFromFirebase(val) {
     if (!val || typeof val !== "object") return null;
     const meta = val.meta && typeof val.meta === "object" ? val.meta : val;
@@ -881,7 +922,7 @@
       ads: listFromMap(val.ads || meta.ads),
       players: listFromMap(val.players || meta.players),
       seenPlayers: listFromMap(val.seenPlayers || meta.seenPlayers),
-      chatRooms: listFromMap(val.chatRooms || meta.chatRooms),
+      chatRooms: listFromMap(val.chatRooms || meta.chatRooms).map(normalizeChatRoom).filter(Boolean),
     };
   }
 
@@ -901,21 +942,18 @@
     };
     (payload.assets || []).forEach((asset) => {
       if (!asset?.id) return;
+      if (!worldSync.needsSeed && !worldSync.touched.has(asset.id)) return;
       updates[`assets/${safeFbKey(asset.id)}`] = publicAsset(asset);
     });
-    (payload.players || []).forEach((player) => {
+    (payload.players || []).filter((player) => player?.id === state?.playerId).forEach((player) => {
       if (!player?.id) return;
       updates[`players/${safeFbKey(player.id)}`] = player;
     });
-    (payload.seenPlayers || []).forEach((item) => {
+    (payload.seenPlayers || []).filter((item) => item?.id === state?.playerId).forEach((item) => {
       if (!item?.id) return;
       updates[`seenPlayers/${safeFbKey(item.id)}`] = item;
     });
-    (payload.chatRooms || []).forEach((room) => {
-      if (!room?.id) return;
-      updates[`chatRooms/${safeFbKey(room.id)}`] = room;
-    });
-    (payload.ads || []).forEach((ad, index) => {
+    (payload.ads || []).filter((ad) => worldSync.needsSeed || worldSync.touched.has(ad?.assetId)).forEach((ad, index) => {
       const key = safeFbKey(ad?.assetId || ad?.id || `ad-${index}`);
       updates[`ads/${key}`] = ad;
     });
@@ -1203,6 +1241,16 @@
     }[ch]));
   }
 
+  function safeColor(value) {
+    const color = String(value || "");
+    return /^#[0-9a-f]{3,8}$/i.test(color) ? color : "#c45c26";
+  }
+
+  function safeImageUrl(value) {
+    const url = String(value || "");
+    return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(url) ? url : "";
+  }
+
   function makeId(prefix) {
     return `${prefix}-${Math.floor(Math.random() * 1e9).toString(36)}`;
   }
@@ -1380,6 +1428,24 @@
     els.authError.textContent = message;
   }
 
+  async function reserveGlobalHandle(id, nick) {
+    const db = firebaseDb();
+    if (!db) return true;
+    try {
+      const connected = await db.ref(".info/connected").once("value");
+      if (connected.val() !== true) return null;
+      const existingPlayer = await db.ref(`${FIREBASE_WORLD_PATH}/players/${safeFbKey(id)}`).once("value");
+      if (existingPlayer.exists()) return false;
+      const result = await db.ref(`bull-lab/handles/${safeFbKey(id)}`).transaction((current) => {
+        if (current) return;
+        return { id, nick, createdAt: Date.now() };
+      }, undefined, false);
+      return !!result.committed;
+    } catch {
+      return null;
+    }
+  }
+
   async function submitAuth(event) {
     event.preventDefault();
     const id = (els.authId.value || "").trim().toLowerCase();
@@ -1397,6 +1463,15 @@
     if (authMode === "register") {
       if (accounts[id]) {
         showAuthError("이미 있는 아이디입니다.");
+        return;
+      }
+      const reserved = await reserveGlobalHandle(id, nick);
+      if (reserved === false) {
+        showAuthError("이미 다른 투자자가 사용 중인 아이디입니다.");
+        return;
+      }
+      if (reserved === null) {
+        showAuthError("공유 시장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
         return;
       }
       const hashed = await hashPassword(password);
@@ -1777,6 +1852,68 @@
     return { ok: true };
   }
 
+  async function executeSharedTrade(assetId, side, qty) {
+    qty = Math.floor(Number(qty) || 0);
+    const localAsset = assetById(assetId);
+    const localHolding = ensureHolding(state.holdings, assetId);
+    if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
+    if (side === "buy" && localAsset.price * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
+
+    const db = firebaseDb();
+    if (!db || !worldSync.connected) return executeTrade(state.playerId, assetId, side, qty);
+    if (worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
+    worldSync.pendingTrades.add(assetId);
+    let fillPrice = localAsset.price;
+    try {
+      const result = await db.ref(`${FIREBASE_WORLD_PATH}/assets/${safeFbKey(assetId)}`).transaction((remoteAsset) => {
+        const asset = remoteAsset && typeof remoteAsset === "object"
+          ? remoteAsset
+          : JSON.parse(JSON.stringify(publicAsset(localAsset)));
+        const currentPrice = Number(asset.price);
+        if (!(currentPrice > 0)) return;
+        if (side === "buy" && currentPrice * qty > state.cash + 1e-9) return;
+        if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return;
+        fillPrice = currentPrice;
+        const float = Math.max(40, Number(asset.float) || 400);
+        const impactK = asset.playerCompany ? 0.85 : 0.3;
+        const signedQty = side === "buy" ? qty : -qty;
+        const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * impactK));
+        asset.price = Math.max(5, round1(currentPrice * (1 + impact)));
+        asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
+        return asset;
+      }, undefined, false);
+      if (!result.committed) {
+        return { ok: false, err: side === "buy" ? "cash" : "qty" };
+      }
+
+      const committedAsset = hydrateAsset(result.snapshot.val());
+      const asset = assetById(assetId);
+      Object.assign(asset, committedAsset);
+      pushTick(asset, asset.price);
+      const holding = ensureHolding(state.holdings, assetId);
+      const total = round1(fillPrice * qty);
+      if (side === "buy") {
+        holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
+        holding.qty += qty;
+        state.cash = round1(state.cash - total);
+      } else {
+        if (fillPrice > holding.avg) state.profitableSales += 1;
+        holding.qty -= qty;
+        state.cash = round1(state.cash + total);
+        if (holding.qty === 0) holding.avg = 0;
+      }
+      recordTrade(side, asset, qty, total);
+      queuePush();
+      return { ok: true };
+    } catch {
+      noteWorldError();
+      return { ok: false, err: "network" };
+    } finally {
+      worldSync.pendingTrades.delete(assetId);
+    }
+  }
+
   function listCompany(spec) {
     const { ownerId, ownerName, name, symbol, sectorKey, seed } = spec;
     const owner = getActor(ownerId);
@@ -1943,15 +2080,18 @@
 
   function stopWorldSync() {
     unsubscribeWorld();
+    stopPresence();
     if (worldSync.pollTimer) clearInterval(worldSync.pollTimer);
     if (worldSync.clockTimer) clearInterval(worldSync.clockTimer);
     if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
     if (worldSync.chartTimer) clearInterval(worldSync.chartTimer);
+    if (worldSync.presenceTimer) clearInterval(worldSync.presenceTimer);
     if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
     worldSync.pollTimer = null;
     worldSync.clockTimer = null;
     worldSync.kstTimer = null;
     worldSync.chartTimer = null;
+    worldSync.presenceTimer = null;
     worldSync.putTimer = null;
   }
 
@@ -2307,7 +2447,7 @@
 
   function mergeChatRooms(remoteRooms) {
     const byId = new Map((worldSync.chatRooms || []).map((room) => [room.id, room]));
-    (remoteRooms || []).forEach((room) => {
+    (remoteRooms || []).map(normalizeChatRoom).filter(Boolean).forEach((room) => {
       const local = byId.get(room.id);
       if (!local) {
         byId.set(room.id, {
@@ -2321,7 +2461,12 @@
         if (msg?.id) msgs.set(msg.id, msg);
       });
       local.name = room.name || local.name;
-      local.messages = [...msgs.values()].sort((a, b) => String(a.ts).localeCompare(String(b.ts))).slice(-CHAT_CAP);
+      local.messages = [...msgs.values()].sort((a, b) => {
+        const at = Number(a.createdAt || 0);
+        const bt = Number(b.createdAt || 0);
+        if (at !== bt) return at - bt;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      }).slice(-CHAT_CAP);
     });
     worldSync.chatRooms = [...byId.values()];
     if (activeChatRoomId && !byId.has(activeChatRoomId)) activeChatRoomId = "";
@@ -2461,6 +2606,7 @@
     await db.ref(FIREBASE_WORLD_PATH).update(updates);
     worldSync.revision = payload.revision;
     worldSync.updatedAt = payload.updatedAt;
+    worldSync.needsSeed = false;
     worldSync.touched.clear();
     worldSync.online = true;
     return true;
@@ -2501,6 +2647,94 @@
     worldSync.unsub = null;
   }
 
+  function presenceRows(value) {
+    const rows = [];
+    if (!value || typeof value !== "object") return rows;
+    Object.values(value).forEach((sessions) => {
+      listFromMap(sessions).forEach((entry) => {
+        if (entry?.playerId) rows.push(entry);
+      });
+    });
+    return rows;
+  }
+
+  function stopPresence() {
+    if (worldSync.presenceRootRef && worldSync.presenceHandler) {
+      worldSync.presenceRootRef.off("value", worldSync.presenceHandler);
+    }
+    if (worldSync.connectedRef && worldSync.connectedHandler) {
+      worldSync.connectedRef.off("value", worldSync.connectedHandler);
+    }
+    if (worldSync.presenceRef) worldSync.presenceRef.remove().catch(() => {});
+    worldSync.presenceRef = null;
+    worldSync.presenceRootRef = null;
+    worldSync.presenceHandler = null;
+    worldSync.connectedRef = null;
+    worldSync.connectedHandler = null;
+    worldSync.connected = false;
+    worldSync.presence = [];
+  }
+
+  function writePresence() {
+    if (!worldSync.presenceRef || !state?.active || !session) return;
+    worldSync.presenceRef.update({
+      playerId: state.playerId,
+      playerName: state.playerName,
+      clientId,
+      online: true,
+      lastSeen: firebase.database.ServerValue.TIMESTAMP,
+    }).catch(() => {});
+  }
+
+  function syncChatRoomsDirect() {
+    const db = firebaseDb();
+    if (!db || !worldSync.chatRooms?.length) return;
+    const updates = {};
+    worldSync.chatRooms.slice(0, 24).forEach((room) => {
+      if (!room?.id) return;
+      const roomKey = safeFbKey(room.id);
+      updates[`chatRooms/${roomKey}/id`] = room.id;
+      updates[`chatRooms/${roomKey}/name`] = String(room.name || "").slice(0, 16);
+      updates[`chatRooms/${roomKey}/createdBy`] = room.createdBy || "";
+      updates[`chatRooms/${roomKey}/createdByName`] = room.createdByName || "";
+      updates[`chatRooms/${roomKey}/createdAt`] = room.createdAt || "";
+      updates[`chatRooms/${roomKey}/createdAtMs`] = Number(room.createdAtMs || 0);
+      (room.messages || []).slice(-CHAT_CAP).forEach((message) => {
+        if (message?.id) updates[`chatRooms/${roomKey}/messages/${safeFbKey(message.id)}`] = message;
+      });
+    });
+    db.ref(FIREBASE_WORLD_PATH).update(updates).catch(() => {});
+  }
+
+  function startPresence() {
+    const db = firebaseDb();
+    if (!db || !state?.playerId) return;
+    stopPresence();
+    worldSync.presenceRootRef = db.ref(FIREBASE_PRESENCE_PATH);
+    worldSync.presenceHandler = (snap) => {
+      worldSync.presence = presenceRows(snap.val());
+      renderSyncStatus();
+    };
+    worldSync.presenceRootRef.on("value", worldSync.presenceHandler);
+    worldSync.connectedRef = db.ref(".info/connected");
+    worldSync.connectedHandler = (snap) => {
+      worldSync.connected = snap.val() === true;
+      if (!worldSync.connected) {
+        renderSyncStatus();
+        return;
+      }
+      const playerKey = safeFbKey(state.playerId);
+      const tabKey = safeFbKey(clientId);
+      worldSync.presenceRef = db.ref(`${FIREBASE_PRESENCE_PATH}/${playerKey}/${tabKey}`);
+      worldSync.presenceRef.onDisconnect().remove().catch(() => {});
+      writePresence();
+      syncChatRoomsDirect();
+      renderSyncStatus();
+    };
+    worldSync.connectedRef.on("value", worldSync.connectedHandler);
+    worldSync.presenceTimer = setInterval(writePresence, PRESENCE_HEARTBEAT_MS);
+  }
+
   function subscribeWorld() {
     const db = firebaseDb();
     if (!db) return;
@@ -2518,21 +2752,24 @@
   }
 
   async function pushWorld() {
-    if (worldSync.putting || worldSync.applyingRemote || !state?.active) return;
+    if (worldSync.putting || worldSync.applyingRemote || !state?.active) return false;
     if (!firebaseReady()) {
       noteWorldError();
-      return;
+      return false;
     }
     worldSync.putting = true;
     try {
       let remote = null;
       try { remote = await fetchWorld(); } catch { remote = null; }
       if (remote) mergeWorld(remote, { preferLocal: true });
+      else worldSync.needsSeed = true;
       const payload = buildWorldPayload();
       await putWorld(payload);
       renderSyncStatus();
+      return true;
     } catch {
       noteWorldError();
+      return false;
     } finally {
       worldSync.putting = false;
       if (worldSync.dirty) {
@@ -2585,6 +2822,33 @@
     });
   }
 
+  async function claimSettlement(periodKey) {
+    const db = firebaseDb();
+    if (!db) return true;
+    const owner = `${state.playerId}:${clientId}`;
+    const now = kstClock.ok ? kstNowMs() : Date.now();
+    try {
+      const result = await db.ref(`${FIREBASE_SETTLEMENT_PATH}/${safeFbKey(periodKey)}`).transaction((current) => {
+        if (current?.status === "done") return;
+        const claimedAt = Number(current?.claimedAt || 0);
+        if (current?.owner && current.owner !== owner && now - claimedAt < SETTLEMENT_LOCK_MS) return;
+        return { owner, periodKey, claimedAt: now, status: "running" };
+      }, undefined, false);
+      return !!result.committed && result.snapshot.val()?.owner === owner;
+    } catch {
+      return false;
+    }
+  }
+
+  async function completeSettlement(periodKey) {
+    const db = firebaseDb();
+    if (!db) return;
+    await db.ref(`${FIREBASE_SETTLEMENT_PATH}/${safeFbKey(periodKey)}`).update({
+      status: "done",
+      completedAt: firebase.database.ServerValue.TIMESTAMP,
+    }).catch(() => {});
+  }
+
   function applySettlementPrices() {
     botTick();
     ensureCoreListings();
@@ -2635,7 +2899,7 @@
 
   async function settlePeriod(periodKey, options = {}) {
     if (!state?.active) return false;
-    useDeviceKst();
+    if (!kstClock.ok) useDeviceKst();
     const applied = worldSync.appliedPeriodId || "";
     if (!options.force && !options.manual && applied && applied >= periodKey) return false;
     const before = totalAssets();
@@ -2662,14 +2926,15 @@
     advanceSharedWeek();
     state.locked = false;
     syncLocalPlayer();
-    await pushWorld();
+    const pushed = await pushWorld();
+    if (options.claimed && pushed) await completeSettlement(periodKey);
     renderAll();
     return true;
   }
 
   async function maybeSettleFromClock() {
     if (!worldSync.inMarket || !state?.active || worldSync.settling) return;
-    useDeviceKst();
+    if (!kstClock.ok) useDeviceKst();
     kstClock.parts = parseKstParts(kstNowMs());
     const ended = lastEndedPeriodId(kstClock.parts);
     const marker = worldSync.appliedPeriodId || worldSync.lastSettledPeriodId || "";
@@ -2677,7 +2942,12 @@
     if (caughtUp) return;
     worldSync.settling = true;
     try {
-      await settlePeriod(ended, { force: coresLookUnsettled() || marker < ended });
+      const claimed = await claimSettlement(ended);
+      if (!claimed) {
+        await pullWorld();
+        return;
+      }
+      await settlePeriod(ended, { force: coresLookUnsettled() || marker < ended, claimed: true });
     } finally {
       worldSync.settling = false;
     }
@@ -2685,9 +2955,20 @@
 
   function renderSyncStatus() {
     if (!els.playerCount) return;
-    const n = Math.max(1, humansRanked().length);
-    const sync = worldSync.online ? "Firebase 공유" : (firebaseReady() ? "연결 중" : "Firebase 없음");
-    els.playerCount.textContent = n ? `접속 ${n}명 · ${sync}` : sync;
+    const cutoff = Date.now() - PRESENCE_STALE_MS;
+    const onlineIds = new Set(
+      (worldSync.presence || [])
+        .filter((item) => item?.online !== false && Number(item.lastSeen || 0) >= cutoff)
+        .map((item) => item.playerId),
+    );
+    if (worldSync.connected && state?.playerId) onlineIds.add(state.playerId);
+    const n = Math.max(worldSync.inMarket ? 1 : 0, onlineIds.size);
+    const sync = worldSync.connected && worldSync.online
+      ? "실시간 연결"
+      : (firebaseReady() ? "재연결 중" : "오프라인 저장");
+    els.playerCount.textContent = `${n}명 접속 · ${sync}`;
+    els.playerCount.classList.toggle("is-online", worldSync.connected && worldSync.online);
+    els.playerCount.classList.toggle("is-reconnecting", firebaseReady() && !(worldSync.connected && worldSync.online));
   }
 
   function renderClock() {
@@ -2709,6 +2990,7 @@
   function startWorldLoop() {
     stopWorldSync();
     subscribeWorld();
+    startPresence();
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
     worldSync.kstTimer = setInterval(() => { refreshKst().then(() => tickClock()); }, KST_POLL_MS);
@@ -2743,7 +3025,7 @@
         return;
       }
       if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중… 이 화면이 닫히면 거래가 시작된 것입니다.";
-      useDeviceKst();
+      if (!kstClock.ok) useDeviceKst();
       if (!state || state.active) bootRun();
       state.playerId = session.id;
       state.playerName = session.nick;
@@ -2843,7 +3125,7 @@
     if (els.chatRoomCount) els.chatRoomCount.textContent = `${rooms.length}개 방`;
     if (els.chatRoomSelect) {
       els.chatRoomSelect.innerHTML = rooms.length
-        ? rooms.map((room) => `<option value="${room.id}" ${room.id === activeChatRoomId ? "selected" : ""}>${room.name}</option>`).join("")
+        ? rooms.map((room) => `<option value="${esc(room.id)}" ${room.id === activeChatRoomId ? "selected" : ""}>${esc(room.name)}</option>`).join("")
         : `<option value="">방 없음</option>`;
     }
     const room = rooms.find((item) => item.id === activeChatRoomId);
@@ -2857,9 +3139,9 @@
     }
     els.chatLog.innerHTML = room.messages.map((msg) => `
       <li>
-        <b>${msg.authorName || "익명"}</b>
-        <span>${msg.text}</span>
-        <time>${msg.ts || ""}</time>
+        <b>${esc(msg.authorName || "익명")}</b>
+        <span>${esc(msg.text)}</span>
+        <time>${esc(msg.ts || "")}</time>
       </li>
     `).join("");
     els.chatLog.scrollTop = els.chatLog.scrollHeight;
@@ -2874,12 +3156,23 @@
       createdBy: state.playerId,
       createdByName: state.playerName,
       createdAt: kstStamp(),
+      createdAtMs: kstClock.ok ? kstNowMs() : Date.now(),
       messages: [],
     };
     worldSync.chatRooms = worldSync.chatRooms || [];
     worldSync.chatRooms.push(room);
     activeChatRoomId = room.id;
-    queuePush();
+    const db = firebaseDb();
+    if (db) {
+      const stored = { ...room };
+      delete stored.messages;
+      db.ref(`${FIREBASE_WORLD_PATH}/chatRooms/${safeFbKey(room.id)}`).set(stored).catch(() => {
+        noteWorldError();
+        queuePush();
+      });
+    } else {
+      queuePush();
+    }
     renderChat();
     return true;
   }
@@ -2890,15 +3183,25 @@
     const room = (worldSync.chatRooms || []).find((item) => item.id === activeChatRoomId);
     if (!room) return false;
     room.messages = room.messages || [];
-    room.messages.push({
+    const message = {
       id: makeId("msg"),
       authorId: state.playerId,
       authorName: state.playerName,
       text: body,
       ts: kstClock.ok ? kstStamp() : "",
-    });
+      createdAt: kstClock.ok ? kstNowMs() : Date.now(),
+    };
+    room.messages.push(message);
     room.messages = room.messages.slice(-CHAT_CAP);
-    queuePush();
+    const db = firebaseDb();
+    if (db) {
+      db.ref(`${FIREBASE_WORLD_PATH}/chatRooms/${safeFbKey(room.id)}/messages/${safeFbKey(message.id)}`).set(message).catch(() => {
+        noteWorldError();
+        queuePush();
+      });
+    } else {
+      queuePush();
+    }
     renderChat();
     return true;
   }
@@ -3089,12 +3392,13 @@
     }
     els.adTicker.textContent = ads.map((asset) => `[${asset.symbol}] ${asset.ad.slogan}`).join("   ·   ");
     els.adList.innerHTML = ads.map((asset) => {
-      const img = asset.ad.image ? `<img class="ad-thumb" alt="" src="${asset.ad.image}">` : "";
+      const image = safeImageUrl(asset.ad.image);
+      const img = image ? `<img class="ad-thumb" alt="" src="${esc(image)}">` : "";
       return `
       <li>
-        <span class="ad-sym">${asset.symbol} · ${AD_CLAIMS[asset.ad.claim] || ""}</span>
-        <b>${asset.ad.slogan}</b>
-        <small>${asset.founderName || "창업자"} 집행 · 사실 여부는 미확인</small>
+        <span class="ad-sym">${esc(asset.symbol)} · ${esc(AD_CLAIMS[asset.ad.claim] || "")}</span>
+        <b>${esc(asset.ad.slogan)}</b>
+        <small>${esc(asset.founderName || "창업자")} 집행 · 사실 여부는 미확인</small>
         ${img}
       </li>
     `;
@@ -3320,9 +3624,9 @@
       return;
     }
     els.liveChartPills.innerHTML = list.map((asset) => `
-      <button type="button" data-chart-id="${asset.id}" class="${asset.id === selectedChartId ? "active" : ""}" style="--asset-color:${asset.color}">
-        <b>${asset.symbol}</b>
-        <span>${asset.name}</span>
+      <button type="button" data-chart-id="${esc(asset.id)}" class="${asset.id === selectedChartId ? "active" : ""}" style="--asset-color:${safeColor(asset.color)}">
+        <b>${esc(asset.symbol)}</b>
+        <span>${esc(asset.name)}</span>
       </button>
     `).join("");
   }
@@ -3330,7 +3634,7 @@
   function updateLiveCharts() {
     if (!state?.assets) return;
     liveCompanies().forEach((asset) => {
-      const row = els.assetList?.querySelector(`[data-id="${asset.id}"]`);
+      const row = [...(els.assetList?.querySelectorAll(".asset-row") || [])].find((item) => item.dataset.id === asset.id);
       if (!row) return;
       const values = ensureTicks(asset);
       const tone = tickToneClass(values);
@@ -3379,17 +3683,18 @@
       const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
       const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
       const flow = flowHint(asset);
-      const founder = asset.playerCompany ? `<span class="founder-tag">${asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업")} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
-      const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${asset.ad.slogan}</span>` : "";
-      const adImg = asset.ad && asset.ad.week === state.week && asset.ad.image ? `<img class="ad-thumb" alt="" src="${asset.ad.image}">` : "";
-      const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${asset.opsNote}</span>` : "";
+      const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
+      const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
+      const adImage = safeImageUrl(asset.ad?.image);
+      const adImg = asset.ad && asset.ad.week === state.week && adImage ? `<img class="ad-thumb" alt="" src="${esc(adImage)}">` : "";
+      const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${esc(asset.opsNote)}</span>` : "";
 
       return `
-        <article class="asset-row ${asset.playerCompany ? "is-player" : "is-core"}" data-id="${asset.id}" style="--asset-color:${asset.color}">
+        <article class="asset-row ${asset.playerCompany ? "is-player" : "is-core"}" data-id="${esc(asset.id)}" style="--asset-color:${safeColor(asset.color)}">
           <div class="asset-name">
-            <span class="asset-symbol">${asset.symbol}</span>
-            <strong>${asset.name}</strong>
-            <small>${asset.sector}</small>
+            <span class="asset-symbol">${esc(asset.symbol)}</span>
+            <strong>${esc(asset.name)}</strong>
+            <small>${esc(asset.sector)}</small>
             ${founder}${adMark}${ops}${adImg}
             <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
           </div>
@@ -3412,7 +3717,7 @@
             </div>
             <div class="quantity">
               <button data-action="minus" type="button" ${disabled ? "disabled" : ""}>−</button>
-              <input type="number" min="1" value="1" aria-label="${asset.name} 거래 수량" ${disabled ? "disabled" : ""}>
+              <input type="number" min="1" value="1" aria-label="${esc(asset.name)} 거래 수량" ${disabled ? "disabled" : ""}>
               <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
             </div>
             <div class="trade-actions">
@@ -3441,11 +3746,11 @@
     held.forEach((asset) => {
       const value = asset.price * state.holdings[asset.id].qty;
       const share = total > 0 ? value / total * 100 : 0;
-      segments.push(`${asset.color} ${cursor}% ${cursor + share}%`);
+      segments.push(`${safeColor(asset.color)} ${cursor}% ${cursor + share}%`);
       cursor += share;
       legend.push(`
-        <div style="--color:${asset.color}">
-          <i></i><span>${asset.name}</span><b>${Math.round(share)}%</b>
+        <div style="--color:${safeColor(asset.color)}">
+          <i></i><span>${esc(asset.name)}</span><b>${Math.round(share)}%</b>
         </div>
       `);
     });
@@ -3545,7 +3850,7 @@
     els.tradeLog.innerHTML = state.log.map((item) => `
       <li>
         <time>W${String(item.week).padStart(2, "0")}</time>
-        <span><b class="${item.type}">${item.type === "buy" ? "매수" : "매도"}</b> ${item.name} ${item.qty}주</span>
+        <span><b class="${item.type}">${item.type === "buy" ? "매수" : "매도"}</b> ${esc(item.name)} ${item.qty}주</span>
         <b>${money(item.total)}</b>
       </li>
     `).join("");
@@ -3556,28 +3861,38 @@
     return Math.max(1, Math.floor(Number(input.value) || 1));
   }
 
-  function buy(id, qty) {
+  async function buy(id, qty) {
     if (!state.active) {
       toast("⚠️", "주문 실패", "시장에 들어간 뒤 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
-    const result = executeTrade(state.playerId, id, "buy", qty);
+    const result = await executeSharedTrade(id, "buy", qty);
     if (!result.ok) {
-      toast("⚠️", "주문 실패", "보유 현금과 주문 수량을 확인하세요.");
+      const message = result.err === "network"
+        ? "실시간 주문 연결이 끊겼습니다. 연결 상태를 확인한 뒤 다시 주문하세요."
+        : result.err === "pending"
+          ? "같은 종목의 이전 주문을 처리하고 있습니다."
+          : "보유 현금과 주문 수량을 확인하세요.";
+      toast("⚠️", "주문 실패", message);
       tone(130, .12, "sawtooth");
     }
   }
 
-  function sell(id, qty) {
+  async function sell(id, qty) {
     if (!state.active) {
       toast("⚠️", "주문 실패", "시장에 들어간 뒤 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
-    const result = executeTrade(state.playerId, id, "sell", qty);
+    const result = await executeSharedTrade(id, "sell", qty);
     if (!result.ok) {
-      toast("⚠️", "주문 실패", "보유 수량을 확인하세요.");
+      const message = result.err === "network"
+        ? "실시간 주문 연결이 끊겼습니다. 연결 상태를 확인한 뒤 다시 주문하세요."
+        : result.err === "pending"
+          ? "같은 종목의 이전 주문을 처리하고 있습니다."
+          : "보유 수량을 확인하세요.";
+      toast("⚠️", "주문 실패", message);
       tone(130, .12, "sawtooth");
     }
   }
@@ -4133,7 +4448,7 @@
 
   async function closeMarket() {
     if (!state.active) return;
-    useDeviceKst();
+    if (!kstClock.ok) useDeviceKst();
     if (!kstClock.ok || !kstClock.parts) {
       toast("⏰", "시각 없음", "지금은 정산할 수 없습니다.");
       return;
@@ -4143,7 +4458,13 @@
       toast("⏳", "이미 정산됨", "이번 교시 기본 종목 정산은 이미 반영됐습니다. 다음 수업 종료를 기다리세요.");
       return;
     }
-    await settlePeriod(key, { manual: true, force: coresLookUnsettled() });
+    const claimed = await claimSettlement(key);
+    if (!claimed) {
+      await pullWorld();
+      toast("⏳", "정산 진행 중", "다른 접속자가 이번 교시를 정산하고 있습니다. 잠시 후 자동 반영됩니다.");
+      return;
+    }
+    await settlePeriod(key, { manual: true, force: coresLookUnsettled(), claimed: true });
   }
 
   function showWeekResult(weekProfit, total, dividend) {
@@ -4156,11 +4477,11 @@
       : "뉴스·수급·광고가 가격에 반영되었습니다. 매수세는 다음 주를 보장하지 않습니다.";
     els.weekResults.innerHTML = state.assets.map((asset) => {
       const type = asset.lastChange > 0 ? "up" : asset.lastChange < 0 ? "down" : "";
-      const extra = asset.playerCompany && asset.opsNote ? `<small>${asset.opsNote}</small>` : "";
+      const extra = asset.playerCompany && asset.opsNote ? `<small>${esc(asset.opsNote)}</small>` : "";
       return `
-        <div class="week-result-item" style="--color:${asset.color}">
-          <i>${asset.symbol}</i>
-          <div><span>${asset.name}</span><b class="${type}">${percent(asset.lastChange)}</b>${extra}</div>
+        <div class="week-result-item" style="--color:${safeColor(asset.color)}">
+          <i>${esc(asset.symbol)}</i>
+          <div><span>${esc(asset.name)}</span><b class="${type}">${percent(asset.lastChange)}</b>${extra}</div>
         </div>
       `;
     }).join("");
@@ -4435,7 +4756,14 @@
     tab.addEventListener("click", () => setAuthMode(tab.dataset.auth));
   });
   els.authForm?.addEventListener("submit", (event) => {
-    submitAuth(event).catch(() => showAuthError("인증에 실패했습니다."));
+    if (els.authSubmit.disabled) {
+      event.preventDefault();
+      return;
+    }
+    els.authSubmit.disabled = true;
+    submitAuth(event)
+      .catch(() => showAuthError("인증에 실패했습니다."))
+      .finally(() => { els.authSubmit.disabled = false; });
   });
   els.lobbyEnter?.addEventListener("click", () => {
     enterGlobalMarket();
