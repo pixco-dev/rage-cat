@@ -949,6 +949,15 @@ nav a[hidden] {
   border: 1px dashed var(--line);
 }
 
+.rank-strip li.is-me {
+  background: rgba(239, 91, 63, .22);
+  border-color: var(--red);
+}
+
+.rank-list li.is-me {
+  background: #fff4ef;
+}
+
 .rank-list li.is-me b {
   color: var(--red);
 }

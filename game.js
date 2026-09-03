@@ -885,10 +885,26 @@
 
   function humansRanked() {
     syncLocalPlayer();
-    return [...(state.players || [])]
-      .filter((player) => player && !player.bot && !String(player.id || "").startsWith("bot-"))
-      .map((player) => ({ ...player, total: playerTotal(player) }))
-      .sort((a, b) => (b.total || 0) - (a.total || 0));
+    const byId = new Map();
+    (state.players || []).forEach((player) => {
+      if (!player?.id || player.bot || String(player.id).startsWith("bot-")) return;
+      if (String(player.id).startsWith("guest-") && player.id !== state.playerId) return;
+      byId.set(player.id, player);
+    });
+    const mine = state.players.find((item) => item.id === state.playerId);
+    if (mine) byId.set(mine.id, mine);
+    return [...byId.values()]
+      .map((player) => {
+        const total = player.id === state.playerId ? totalAssets() : playerTotal(player);
+        return { ...player, total: Number.isFinite(total) ? total : 0 };
+      })
+      .sort((a, b) => {
+        const dt = (b.total || 0) - (a.total || 0);
+        if (dt !== 0) return dt;
+        if (a.id === state.playerId) return -1;
+        if (b.id === state.playerId) return 1;
+        return String(a.name || a.id).localeCompare(String(b.name || b.id), "ko");
+      });
   }
 
   function purgeBots() {
@@ -919,6 +935,7 @@
     const byId = new Map((state.players || []).map((item) => [item.id, item]));
     (remotePlayers || []).forEach((row) => {
       if (!row?.id || row.bot || String(row.id).startsWith("bot-")) return;
+      if (String(row.id).startsWith("guest-")) return;
       if (row.id === state.playerId) return;
       const next = {
         id: row.id,
@@ -1388,11 +1405,13 @@
 
   function syncLocalPlayer() {
     if (!state) return;
+    if (session?.id) state.playerId = session.id;
+    if (session?.nick) state.playerName = session.nick;
     const existing = state.players.find((item) => item.id === state.playerId);
     const snapshot = {
       id: state.playerId,
-      name: state.playerName,
-      cash: state.cash,
+      name: state.playerName || session?.nick || state.playerId,
+      cash: Number.isFinite(state.cash) ? state.cash : 0,
       holdings: cloneHoldings(state.holdings),
       founded: state.founded,
       total: totalAssets(),
@@ -1401,6 +1420,12 @@
     };
     if (existing) Object.assign(existing, snapshot);
     else state.players.unshift(snapshot);
+    state.players = state.players.filter((player, index, list) => {
+      if (!player?.id || player.bot || String(player.id).startsWith("bot-")) return false;
+      if (String(player.id).startsWith("guest-") && player.id !== state.playerId) return false;
+      return list.findIndex((item) => item.id === player.id) === index;
+    });
+    if (!state.players.some((item) => item.id === state.playerId)) state.players.unshift(snapshot);
     state.players.forEach((player) => {
       player.total = playerTotal(player);
     });
@@ -2571,7 +2596,7 @@
 
   function renderSyncStatus() {
     if (!els.playerCount) return;
-    const n = worldSync.seenPlayers?.length || state?.players?.filter((item) => !item.bot).length || 0;
+    const n = Math.max(1, humansRanked().length);
     const sync = worldSync.online ? "공유됨" : "연결 중";
     els.playerCount.textContent = n ? `접속 ${n}명 · ${sync}` : sync;
   }
@@ -2913,21 +2938,25 @@
   }
 
   function renderRanking() {
-    const top = humansRanked().slice(0, 5);
-    const rows = top.map((player, index) => {
+    const ranked = humansRanked();
+    const meIndex = ranked.findIndex((player) => player.id === state.playerId);
+    let top = ranked.slice(0, 5);
+    if (meIndex >= 5) top = [...ranked.slice(0, 4), ranked[meIndex]];
+    const place = (player) => ranked.findIndex((item) => item.id === player.id) + 1;
+    const rows = top.map((player) => {
       const me = player.id === state.playerId;
       const firm = player.founded?.symbol || "";
       return `
         <li class="${me ? "is-me" : ""}">
-          <span class="rank-n">${index + 1}</span>
+          <span class="rank-n">${place(player)}</span>
           <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b>
           <small>${firm ? `${esc(firm)} · ` : ""}${money(player.total || 0)}</small>
         </li>`;
     }).join("");
     if (els.rankStrip) {
-      els.rankStrip.innerHTML = top.map((player, index) => {
+      els.rankStrip.innerHTML = top.map((player) => {
         const me = player.id === state.playerId;
-        return `<li><b>${index + 1} ${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b><small>${money(player.total || 0)}</small></li>`;
+        return `<li class="${me ? "is-me" : ""}"><b>${place(player)} ${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b><small>${money(player.total || 0)}</small></li>`;
       }).join("");
     }
     if (els.rankList) {
