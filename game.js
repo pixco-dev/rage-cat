@@ -2033,7 +2033,7 @@
 
   function clockLabel() {
     if (!kstClock.ok || !kstClock.parts) {
-      return { line: "한국 표준시 확인 중", hint: "교시가 끝나는 시각에 주가 변동이 공개됩니다. 그 사이에는 계속 거래할 수 있습니다.", open: true };
+      return { line: "한국 표준시 확인 중", hint: "기본 종목은 교시가 끝나면 정산됩니다. 학생 회사도 그 사이 사고팔 수 있습니다.", open: true };
     }
     const parts = kstClock.parts;
     const next = nextSettlement(parts);
@@ -2047,7 +2047,7 @@
     const when = weekdayKo(next.ymd);
     return {
       line: `${kst} · 다음 주가 공개 ${when} ${slot}까지 ${count}`,
-      hint: "기본 6종목은 시간과 관계없이 사고팔 수 있습니다. 교시가 끝나면 주가만 공개됩니다.",
+      hint: "기본 종목은 교시가 끝나면 정산됩니다. 한빛테크와 학생 회사 모두 그 사이에도 사고팔 수 있습니다.",
       open: true,
     };
   }
@@ -2427,6 +2427,7 @@
   function applySettlementPrices() {
     botTick();
     ensureCoreListings();
+    if (!state.changes || !Object.keys(state.changes).length) computeWeekExpectations();
     state.assets.forEach((asset) => {
       if (asset.playerCompany) {
         rollCompanyOps(asset);
@@ -2495,11 +2496,7 @@
     if (after > 0 && state.cash / after >= .3) state.cashSafeWeeks += 1;
     checkMissions();
     checkBadges();
-    if (options.manual) {
-      showWeekResult(after - before, after, localDividend);
-    } else {
-      toast("📈", "주가 공개", "변동이 반영됐습니다. 기본 종목은 지금 바로 사고팔 수 있습니다.");
-    }
+    showWeekResult(after - before, after, localDividend);
     worldSync.lastSettledPeriodId = periodKey;
     advanceSharedWeek();
     state.locked = false;
@@ -2512,9 +2509,9 @@
   async function maybeSettleFromClock() {
     if (!state?.active || !kstClock.ok || !kstClock.parts) return;
     kstClock.parts = parseKstParts(kstNowMs());
+    const ended = lastEndedPeriodId(kstClock.parts);
     if (!worldSync.lastSettledPeriodId) {
-      worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
-      queuePush();
+      await settlePeriod(ended);
       return;
     }
     const due = duePeriodId(worldSync.lastSettledPeriodId, kstClock.parts);
@@ -2582,9 +2579,7 @@
       try { restoreAccountWealth(local); } catch { /* keep seeded wallet */ }
       purgeBots();
       ensureCoreListings();
-      if (kstClock.ok && kstClock.parts) {
-        if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
-      }
+      computeWeekExpectations();
       if (worldSync.eventDeck?.length) {
         state.eventDeck = worldSync.eventDeck.map((i) => EVENTS[i] || EVENTS[0]);
         state.event = hydrateEvent(worldSync.eventDeck[state.week - 1], state.event);
@@ -2754,7 +2749,7 @@
   }
 
   function openFoundModal() {
-    if (!state.active || state.locked) return;
+    if (!state.active) return;
     if (state.founded) {
       toast("🏢", "이미 설립함", "회사는 계정당 한 곳만 상장할 수 있습니다.");
       return;
@@ -2768,7 +2763,7 @@
   }
 
   function openAdModal() {
-    if (!state.active || state.locked) return;
+    if (!state.active) return;
     if (!state.founded) {
       toast("📢", "회사 없음", "먼저 회사를 설립해야 광고를 집행할 수 있습니다.");
       return;
@@ -2867,8 +2862,8 @@
     if (els.roomCodeLabel) els.roomCodeLabel.textContent = "전 세계 단일 시장";
     renderRanking();
     renderClock();
-    const closed = !state.active || state.locked;
-    if (els.closeMarket) els.closeMarket.disabled = !state.active || state.locked;
+    const closed = !state.active;
+    if (els.closeMarket) els.closeMarket.disabled = !state.active;
     if (els.foundButton) els.foundButton.disabled = closed || !!state.founded;
     if (els.adButton) els.adButton.disabled = closed || !state.founded || state.adDone;
     renderChat();
@@ -3021,7 +3016,7 @@
     renderRoom();
     renderAds();
     renderChat();
-    if (els.closeMarket) els.closeMarket.disabled = !state.active || state.locked;
+    if (els.closeMarket) els.closeMarket.disabled = !state.active;
   }
 
   function renderSummary() {
@@ -3359,7 +3354,7 @@
   }
 
   function analyze(id) {
-    if (!state.active || state.locked || state.research < 1 || state.analyzed.has(id)) return;
+    if (!state.active || state.research < 1 || state.analyzed.has(id)) return;
     state.research -= 1;
     state.analyses += 1;
     state.analyzed.add(id);
@@ -3421,7 +3416,7 @@
   }
 
   function canAct() {
-    return state.active && !state.locked;
+    return !!state?.active;
   }
 
   function spendEnergy(amount = 1) {
@@ -3897,9 +3892,10 @@
   }
 
   async function closeMarket() {
-    if (!state.active || state.locked) return;
+    if (!state.active) return;
+    useDeviceKst();
     if (!kstClock.ok || !kstClock.parts) {
-      toast("⏰", "표준시 없음", "한국 표준시 서버에 연결되지 않아 정산할 수 없습니다.");
+      toast("⏰", "시각 없음", "지금은 정산할 수 없습니다.");
       return;
     }
     const key = lastEndedPeriodId(kstClock.parts);
