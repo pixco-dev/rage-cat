@@ -10,6 +10,16 @@
   const FIREBASE_WORLD_PATH = "bull-lab/world";
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
+  const DEFAULT_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyCKiq0ickfqHqMWosW7OtLG9Pp0Ptd9CBw",
+    authDomain: "bull-run-lab.firebaseapp.com",
+    databaseURL: "https://bull-run-lab-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "bull-run-lab",
+    storageBucket: "bull-run-lab.firebasestorage.app",
+    messagingSenderId: "399137766633",
+    appId: "1:399137766633:web:947c6b198b50b770e80478",
+    measurementId: "G-4PDLRCKHD5",
+  };
   const FETCH_MS = 8000;
   const POLL_MS = 8000;
   const KST_POLL_MS = 45000;
@@ -18,6 +28,7 @@
   const SETTLEMENT_LOCK_MS = 60000;
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
+  const FIREBASE_READ_TIMEOUT_MS = 1800;
   const TICK_MS = 1000;
   const TICK_CAP = 96;
   const LIVE_W = 640;
@@ -848,7 +859,7 @@
   }
 
   function firebaseConfig() {
-    const cfg = window.FIREBASE_CONFIG || {};
+    const cfg = window.FIREBASE_CONFIG || DEFAULT_FIREBASE_CONFIG;
     return cfg.databaseURL && cfg.apiKey ? cfg : null;
   }
 
@@ -1011,6 +1022,7 @@
     });
     const mine = state.players.find((item) => item.id === state.playerId);
     if (mine) byId.set(mine.id, mine);
+    if (!session && !state.active) byId.delete(state.playerId);
     return [...byId.values()]
       .map((player) => {
         const total = player.id === state.playerId ? totalAssets() : playerTotal(player);
@@ -2590,11 +2602,39 @@
 
   async function fetchWorld() {
     const db = firebaseDb();
+    const cfg = firebaseConfig();
+    const restUrl = cfg?.databaseURL
+      ? `${cfg.databaseURL.replace(/\/$/, "")}/${FIREBASE_WORLD_PATH}.json`
+      : "";
+
+    if (restUrl) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FIREBASE_READ_TIMEOUT_MS);
+      try {
+        const response = await fetch(restUrl, { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error(`firebase-rest-${response.status}`);
+        const world = worldFromFirebase(await response.json());
+        if (world) writeLocalWorld(world);
+        return world;
+      } catch {
+        /* fall through to the realtime SDK or local cache */
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     if (!db) return readLocalWorld();
-    const snap = await db.ref(FIREBASE_WORLD_PATH).once("value");
-    const world = worldFromFirebase(snap.val());
-    if (world) writeLocalWorld(world);
-    return world;
+    try {
+      const snap = await Promise.race([
+        db.ref(FIREBASE_WORLD_PATH).once("value"),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("firebase-sdk-timeout")), FIREBASE_READ_TIMEOUT_MS)),
+      ]);
+      const world = worldFromFirebase(snap.val());
+      if (world) writeLocalWorld(world);
+      return world;
+    } catch {
+      return readLocalWorld();
+    }
   }
 
   async function putWorld(payload) {
@@ -2965,7 +3005,7 @@
     const n = Math.max(worldSync.inMarket ? 1 : 0, onlineIds.size);
     const sync = worldSync.connected && worldSync.online
       ? "실시간 연결"
-      : (firebaseReady() ? "재연결 중" : "오프라인 저장");
+      : (worldSync.online ? "공유 연결" : (firebaseReady() ? "재연결 중" : "오프라인 저장"));
     els.playerCount.textContent = `${n}명 접속 · ${sync}`;
     els.playerCount.classList.toggle("is-online", worldSync.connected && worldSync.online);
     els.playerCount.classList.toggle("is-reconnecting", firebaseReady() && !(worldSync.connected && worldSync.online));
@@ -3358,6 +3398,20 @@
     }
     if (els.rankList) {
       els.rankList.innerHTML = top.length ? rows : `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
+    }
+  }
+
+  async function loadPublicRanking() {
+    try {
+      const remote = await fetchWorld();
+      if (!remote?.players) return;
+      mergePlayers(remote.players);
+      purgeBots();
+      worldSync.online = true;
+      renderRanking();
+      renderSyncStatus();
+    } catch {
+      /* keep the locally cached ranking */
     }
   }
 
@@ -4897,4 +4951,5 @@
     console.error(err);
   }
   refreshKst().then(() => renderClock()).catch(() => {});
+  loadPublicRanking();
 })();
