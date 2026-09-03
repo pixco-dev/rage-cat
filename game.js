@@ -561,6 +561,7 @@
 
   const els = {
     openSetup: $("#open-setup"),
+    hero: $("#hero"),
     restart: $("#restart-button"),
     setupModal: $("#setup-modal"),
     start: $("#start-game"),
@@ -716,6 +717,8 @@
     worldUrl: "",
     entering: false,
     inMarket: false,
+    appliedPeriodId: "",
+    settling: false,
   };
   const kstClock = {
     ok: false,
@@ -2219,14 +2222,33 @@
     if (!activeChatRoomId && worldSync.chatRooms[0]) activeChatRoomId = worldSync.chatRooms[0].id;
   }
 
+  function remoteCoresLookSettled(remote) {
+    const rows = remote?.assets || [];
+    const moved = CORE_ASSET_IDS.filter((id) => {
+      const row = rows.find((item) => item.id === id);
+      return ((row?.history || []).length > 1);
+    }).length;
+    return moved >= 4;
+  }
+
+  function coresLookUnsettled() {
+    const unset = CORE_ASSET_IDS.filter((id) => ((assetById(id)?.history || []).length <= 1)).length;
+    return unset >= 4;
+  }
+
   function mergeWorld(remote, options = {}) {
     if (!remote || typeof remote !== "object") return { settled: false };
     const preferLocal = !!options.preferLocal;
     const prevSettled = worldSync.lastSettledPeriodId;
     worldSync.revision = Math.max(worldSync.revision || 0, remote.revision || 0);
     worldSync.updatedAt = Math.max(worldSync.updatedAt || 0, remote.updatedAt || 0);
-    if (remote.lastSettledPeriodId && (!worldSync.lastSettledPeriodId || remote.lastSettledPeriodId > worldSync.lastSettledPeriodId)) {
-      worldSync.lastSettledPeriodId = remote.lastSettledPeriodId;
+    if (remote.lastSettledPeriodId && remoteCoresLookSettled(remote)) {
+      if (!worldSync.lastSettledPeriodId || remote.lastSettledPeriodId > worldSync.lastSettledPeriodId) {
+        worldSync.lastSettledPeriodId = remote.lastSettledPeriodId;
+      }
+      if (!worldSync.appliedPeriodId || remote.lastSettledPeriodId > worldSync.appliedPeriodId) {
+        worldSync.appliedPeriodId = remote.lastSettledPeriodId;
+      }
     }
     if (remote.eventDeck?.length) worldSync.eventDeck = remote.eventDeck;
     worldSync.botsSpawned = worldSync.botsSpawned || !!remote.botsSpawned;
@@ -2249,7 +2271,9 @@
         ensureHolding(state.holdings, row.id);
         return;
       }
-      const keepPrice = preferLocal && worldSync.touched.has(row.id);
+      const remoteSettled = remote.lastSettledPeriodId || "";
+      const localApplied = worldSync.appliedPeriodId || "";
+      const keepPrice = worldSync.touched.has(row.id) && (preferLocal || (localApplied && localApplied >= remoteSettled));
       local.symbol = row.symbol || local.symbol;
       local.name = row.name || local.name;
       local.sector = row.sector || local.sector;
@@ -2452,14 +2476,17 @@
   function applySettlementPrices() {
     botTick();
     ensureCoreListings();
-    if (!state.changes || !Object.keys(state.changes).length) computeWeekExpectations();
+    computeWeekExpectations();
     state.assets.forEach((asset) => {
       if (asset.playerCompany) {
         rollCompanyOps(asset);
         creditFounderOps(asset);
       }
       const newsChange = state.changes[asset.id] || 0;
-      const extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
+      let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
+      if (!asset.playerCompany && Math.abs(extra) < 0.003) {
+        extra = (extra >= 0 ? 1 : -1) * (0.004 + random() * 0.01);
+      }
       asset.price = Math.max(5, round1(asset.price * (1 + extra)));
       if (asset.playerCompany) resolveAdTruth(asset);
       const open = asset.weekOpen || asset.history[asset.history.length - 1] || asset.price;
@@ -2496,15 +2523,13 @@
 
   async function settlePeriod(periodKey, options = {}) {
     if (!state?.active) return false;
-    try {
-      const remote = await fetchWorld();
-      if (remote) mergeWorld(remote, { preferLocal: false });
-    } catch {
-      /* settle locally if the shared store is slow */
-    }
-    if (!options.manual && worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId >= periodKey) return false;
+    useDeviceKst();
+    const applied = worldSync.appliedPeriodId || "";
+    if (!options.force && !options.manual && applied && applied >= periodKey) return false;
     const before = totalAssets();
     applySettlementPrices();
+    worldSync.appliedPeriodId = periodKey;
+    worldSync.lastSettledPeriodId = periodKey;
     let localDividend = 0;
     if (state.week % 4 === 0) {
       state.assets.forEach((asset) => {
@@ -2521,9 +2546,7 @@
     if (after > 0 && state.cash / after >= .3) state.cashSafeWeeks += 1;
     checkMissions();
     checkBadges();
-    if (!options.quiet) showWeekResult(after - before, after, localDividend);
-    else toast("📢", "주가 반영", "직전 교시 정산이 가격에 들어갔습니다. 지금 사고팔 수 있습니다.");
-    worldSync.lastSettledPeriodId = periodKey;
+    showWeekResult(after - before, after, localDividend);
     advanceSharedWeek();
     state.locked = false;
     syncLocalPlayer();
@@ -2533,15 +2556,19 @@
   }
 
   async function maybeSettleFromClock() {
-    if (!worldSync.inMarket || !state?.active || !kstClock.ok || !kstClock.parts) return;
+    if (!worldSync.inMarket || !state?.active || worldSync.settling) return;
+    useDeviceKst();
     kstClock.parts = parseKstParts(kstNowMs());
     const ended = lastEndedPeriodId(kstClock.parts);
-    if (!worldSync.lastSettledPeriodId) {
-      await settlePeriod(ended, { quiet: true });
-      return;
+    const marker = worldSync.appliedPeriodId || worldSync.lastSettledPeriodId || "";
+    const caughtUp = marker >= ended && !coresLookUnsettled();
+    if (caughtUp) return;
+    worldSync.settling = true;
+    try {
+      await settlePeriod(ended, { force: coresLookUnsettled() || marker < ended });
+    } finally {
+      worldSync.settling = false;
     }
-    const due = duePeriodId(worldSync.lastSettledPeriodId, kstClock.parts);
-    if (due) await settlePeriod(due);
   }
 
   function renderSyncStatus() {
@@ -2627,15 +2654,17 @@
       toast("📈", "시장 입장", "거래가 시작됐습니다. 한빛테크와 학생 회사 모두 지금 사고팔 수 있습니다.");
       closeModal(els.lobbyModal);
       closeModal(els.setupModal);
+      await maybeSettleFromClock();
       refreshKst().catch(() => useDeviceKst());
       fetchWorld().then((fetched) => {
         if (!fetched || !state?.active) return;
         worldSync.online = true;
-        mergeWorld(fetched, { preferLocal: false });
+        mergeWorld(fetched, { preferLocal: true });
         restoreAccountWealth(fetched);
         ensureCoreListings();
         ensureTradableCash();
         renderAll();
+        maybeSettleFromClock();
       }).catch(() => {});
     } catch (err) {
       console.error(err);
@@ -2790,6 +2819,8 @@
     els.game.hidden = true;
     els.game.classList.add("is-locked");
     if (els.marketNav) els.marketNav.hidden = true;
+    document.body.classList.remove("in-play");
+    if (els.hero) els.hero.hidden = false;
   }
 
   function fillFoundSectors() {
@@ -3950,17 +3981,17 @@
       return;
     }
     const key = lastEndedPeriodId(kstClock.parts);
-    if (worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId >= key) {
-      toast("⏳", "이미 정산됨", "이번 교시 정산은 이미 반영됐습니다. 다음 수업 종료를 기다리세요.");
+    if ((worldSync.appliedPeriodId || "") >= key && !coresLookUnsettled()) {
+      toast("⏳", "이미 정산됨", "이번 교시 기본 종목 정산은 이미 반영됐습니다. 다음 수업 종료를 기다리세요.");
       return;
     }
-    await settlePeriod(key, { manual: true });
+    await settlePeriod(key, { manual: true, force: coresLookUnsettled() });
   }
 
   function showWeekResult(weekProfit, total, dividend) {
     els.weekResultLabel.textContent = `S${state.season} · WEEK ${String(state.week).padStart(2, "0")} CLOSED`;
     if (els.weekResultTitle) {
-      els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 주가 공개` : "이번 교시 주가 공개";
+      els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 기본 종목 정산` : "기본 종목 정산 · 이번 교시 주가 공개";
     }
     els.weekSummary.textContent = dividend > 0
       ? `시장 변동과 함께 ${money(dividend)}의 분기 배당이 반영되었습니다.`
@@ -4047,12 +4078,16 @@
     els.game.hidden = false;
     els.game.classList.remove("is-locked");
     if (els.marketNav) els.marketNav.hidden = false;
+    document.body.classList.add("in-play");
+    if (els.hero) els.hero.hidden = true;
   }
 
   function bootRun() {
     destroyNet();
     clearBotTimers();
     worldSync.inMarket = false;
+    worldSync.appliedPeriodId = "";
+    worldSync.settling = false;
     state = createState(selectedMode, false);
     state.playerId = session.id;
     state.playerName = session.nick;
@@ -4097,9 +4132,9 @@
   function startGame() {
     if (!requireSession()) return;
     closeModal(els.setupModal);
+    closeModal(els.lobbyModal);
     bootRun();
-    fillLobby();
-    openModal(els.lobbyModal);
+    enterGlobalMarket();
   }
 
   function openModal(modal) {

@@ -151,6 +151,16 @@ main {
   padding: 90px 1.5%;
 }
 
+body.in-play .hero,
+.hero[hidden] {
+  display: none !important;
+}
+
+body.in-play .game {
+  min-height: calc(100vh - 92px);
+  margin-top: 12px;
+}
+
 .hero-copy {
   width: 100%;
   max-width: 100%;
