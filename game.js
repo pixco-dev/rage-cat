@@ -2,12 +2,26 @@
   "use strict";
 
   const MAX_WEEKS = 12;
-  const PEER_PREFIX = "bullab-";
   const AUTH_STORE = "bull-lab-accounts-v1";
   const SESSION_STORE = "bull-lab-session-v1";
   const AD_COST = 18;
   const MIN_SEED = 80;
-  const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const WORLD_BLOB_ID = "b011ab00-7a6e-41ab-8c00-00b011ab0001";
+  const WORLD_URL = `https://jsonblob.com/api/jsonBlob/${WORLD_BLOB_ID}`;
+  const POLL_MS = 2500;
+  const KST_POLL_MS = 45000;
+  const CHAT_CAP = 50;
+  const PUT_DEBOUNCE_MS = 450;
+
+  const PERIODS = [
+    { n: 1, h: 9, m: 20, label: "1교시" },
+    { n: 2, h: 10, m: 20, label: "2교시" },
+    { n: 3, h: 11, m: 20, label: "3교시" },
+    { n: 4, h: 12, m: 20, label: "4교시" },
+    { n: 5, h: 14, m: 0, label: "5교시" },
+    { n: 6, h: 15, m: 0, label: "6교시" },
+    { n: 7, h: 16, m: 0, label: "7교시" },
+  ];
 
   const MODES = {
     rookie: { name: "연습생 모드", cash: 800, goal: 1800, research: 2, energy: 4 },
@@ -35,23 +49,10 @@
   ];
 
   const PLAYER_COLORS = ["#c45c26", "#2a6f7f", "#8b3d62", "#4a6b2f", "#6b4ea1", "#b33b3b"];
-
-  const BOT_INVESTORS = [
-    { id: "bot-kim", name: "김봇서" },
-    { id: "bot-lee", name: "이봇윤" },
-    { id: "bot-park", name: "박봇준" },
-    { id: "bot-choi", name: "최봇하" },
-    { id: "bot-jung", name: "정봇우" },
-    { id: "bot-han", name: "한봇별" },
-  ];
-
-  const BOT_FIRMS = [
-    { name: "달맞이소프트", symbol: "DMS", sectorKey: "tech", seed: 120 },
-    { name: "북극성바이오", symbol: "PSB", sectorKey: "bio", seed: 110 },
-    { name: "한울전력", symbol: "HUL", sectorKey: "energy", seed: 100 },
-    { name: "골목마켓", symbol: "GMK", sectorKey: "retail", seed: 90 },
-    { name: "모래금맥", symbol: "MGM", sectorKey: "gold", seed: 95 },
-    { name: "별똥코인랩", symbol: "BCL", sectorKey: "coin", seed: 85 },
+  const LOCAL_WORLD_KEY = "bull-lab-shared-world-v2";
+  const KST_ENDPOINTS = [
+    "https://worldtimeapi.org/api/timezone/Asia/Seoul",
+    "https://timeapi.io/api/Time/current/zone?timeZone=Asia/Seoul",
   ];
 
   const AD_CLAIMS = {
@@ -607,13 +608,13 @@
     lobbyModal: $("#lobby-modal"),
     lobbyUser: $("#lobby-user"),
     lobbyStatus: $("#lobby-status"),
-    lobbySolo: $("#lobby-solo"),
-    lobbyHost: $("#lobby-host"),
-    lobbyJoin: $("#lobby-join"),
-    joinCode: $("#join-code"),
+    lobbyEnter: $("#lobby-enter"),
+    lobbyClock: $("#lobby-clock"),
     roomCodeLabel: $("#room-code-label"),
-    playerList: $("#player-list"),
-    copyRoom: $("#copy-room"),
+    periodClock: $("#period-clock"),
+    playerCount: $("#player-count"),
+    rankStrip: $("#rank-strip"),
+    rankList: $("#rank-list"),
     foundButton: $("#found-button"),
     adButton: $("#ad-button"),
     foundModal: $("#found-modal"),
@@ -627,12 +628,20 @@
     adForm: $("#ad-form"),
     adSlogan: $("#ad-slogan"),
     adClaim: $("#ad-claim"),
+    adImage: $("#ad-image"),
     adError: $("#ad-error"),
     adTicker: $("#ad-ticker"),
     adList: $("#ad-list"),
     closeMarketHint: $("#close-market-hint"),
     continueSeason: $("#continue-season"),
     weekResultTitle: $("#week-result-title"),
+    chatCreateForm: $("#chat-create-form"),
+    chatRoomName: $("#chat-room-name"),
+    chatRoomSelect: $("#chat-room-select"),
+    chatRoomCount: $("#chat-room-count"),
+    chatLog: $("#chat-log"),
+    chatForm: $("#chat-form"),
+    chatInput: $("#chat-input"),
   };
 
   let selectedMode = "rookie";
@@ -642,8 +651,229 @@
   let session = null;
   let authMode = "login";
   let authNext = "setup";
-  let botTimers = [];
-  const net = { peer: null, conns: [], hostConn: null, connecting: false };
+  let pendingAdImage = "";
+  let activeChatRoomId = "";
+  const worldSync = {
+    revision: 0,
+    updatedAt: 0,
+    lastSettledPeriodId: "",
+    putting: false,
+    dirty: false,
+    putTimer: null,
+    pollTimer: null,
+    clockTimer: null,
+    kstTimer: null,
+    touched: new Set(),
+    chatRooms: [],
+    seenPlayers: [],
+    eventDeck: [],
+    eventKey: 0,
+    botsSpawned: false,
+  };
+  const kstClock = {
+    ok: false,
+    serverUtcMs: 0,
+    fetchedAt: 0,
+    source: "",
+  };
+
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function kstInstantMs() {
+    if (!kstClock.ok) return null;
+    return kstClock.serverUtcMs + (Date.now() - kstClock.fetchedAt);
+  }
+
+  function kstParts() {
+    const ms = kstInstantMs();
+    if (ms == null) return null;
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "short",
+      hourCycle: "h23",
+    });
+    const bag = {};
+    fmt.formatToParts(new Date(ms)).forEach((part) => {
+      if (part.type !== "literal") bag[part.type] = part.value;
+    });
+    return {
+      y: Number(bag.year),
+      mo: Number(bag.month),
+      d: Number(bag.day),
+      h: Number(bag.hour),
+      mi: Number(bag.minute),
+      s: Number(bag.second),
+      weekday: bag.weekday,
+      ms,
+    };
+  }
+
+  function kstLabel() {
+    const p = kstParts();
+    if (!p) return "한국 표준시 확인 중";
+    return `KST ${p.y}-${pad2(p.mo)}-${pad2(p.d)} ${pad2(p.h)}:${pad2(p.mi)}:${pad2(p.s)}`;
+  }
+
+  function isKstWeekend(parts) {
+    const w = (parts.weekday || "").slice(0, 3);
+    return w === "Sat" || w === "Sun";
+  }
+
+  function periodIdFromParts(parts, period) {
+    return `${parts.y}-${pad2(parts.mo)}-${pad2(parts.d)}-${period.n}`;
+  }
+
+  function currentOrDuePeriod(parts) {
+    if (!parts || isKstWeekend(parts)) return { kind: "closed", label: "주말 휴장" };
+    const minutes = parts.h * 60 + parts.mi;
+    let due = null;
+    for (const period of PERIODS) {
+      const end = period.h * 60 + period.m;
+      if (minutes >= end && worldSync.lastSettledPeriodId !== periodIdFromParts(parts, period)) {
+        due = period;
+      }
+    }
+    const next = PERIODS.find((period) => minutes < period.h * 60 + period.m);
+    if (!next && !due) return { kind: "closed", label: "오늘 정규장 종료" };
+    if (due) return { kind: "due", period: due, label: `${due.label} 정산` };
+    const remain = next.h * 60 + next.m - minutes;
+    return { kind: "open", period: next, label: `${next.label}까지 ${remain}분`, remain };
+  }
+
+  async function fetchKst() {
+    for (const url of KST_ENDPOINTS) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) continue;
+        const data = await res.json();
+        let iso = data.datetime || data.dateTime;
+        if (!iso && data.year) {
+          iso = `${data.year}-${pad2(data.month)}-${pad2(data.day)}T${pad2(data.hour)}:${pad2(data.minute)}:${pad2(data.seconds || 0)}+09:00`;
+        }
+        const parsed = Date.parse(iso);
+        if (!Number.isFinite(parsed)) continue;
+        kstClock.ok = true;
+        kstClock.serverUtcMs = parsed;
+        kstClock.fetchedAt = Date.now();
+        kstClock.source = url;
+        return true;
+      } catch {
+        /* try next */
+      }
+    }
+    kstClock.ok = false;
+    return false;
+  }
+
+  function readLocalWorld() {
+    try {
+      return JSON.parse(localStorage.getItem(LOCAL_WORLD_KEY) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLocalWorld(payload) {
+    try {
+      localStorage.setItem(LOCAL_WORLD_KEY, JSON.stringify(payload));
+    } catch {
+      /* quota */
+    }
+  }
+
+  async function fetchWorldRaw() {
+    try {
+      const res = await fetch(WORLD_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
+      if (!res.ok) return readLocalWorld();
+      return await res.json();
+    } catch {
+      return readLocalWorld();
+    }
+  }
+
+  async function putWorldRaw(payload) {
+    writeLocalWorld(payload);
+    try {
+      await fetch(WORLD_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      /* local copy is enough if remote is down */
+    }
+  }
+
+  function stripBotsFromWorld(payload) {
+    if (!payload) return payload;
+    payload.players = (payload.players || []).filter((player) => !player.bot && !String(player.id || "").startsWith("bot-"));
+    payload.assets = (payload.assets || []).filter((asset) => !String(asset.founderId || "").startsWith("bot-") && !String(asset.id || "").startsWith("co-bot"));
+    return payload;
+  }
+
+  function humansRanked() {
+    syncLocalPlayer();
+    return [...(state.players || [])]
+      .filter((player) => player && !player.bot && !String(player.id || "").startsWith("bot-"))
+      .map((player) => ({ ...player, total: playerTotal(player) }))
+      .sort((a, b) => (b.total || 0) - (a.total || 0));
+  }
+
+  function purgeBots() {
+    if (!state) return;
+    state.players = (state.players || []).filter((player) => player && !player.bot && !String(player.id || "").startsWith("bot-"));
+    state.assets = (state.assets || []).filter((asset) => !String(asset.founderId || "").startsWith("bot-") && !String(asset.id || "").startsWith("co-bot"));
+    worldSync.botsSpawned = false;
+  }
+
+  function publicPlayer(player) {
+    if (!player) return null;
+    const cash = player.id === state.playerId ? state.cash : player.cash;
+    const holdings = cloneHoldings(player.id === state.playerId ? state.holdings : player.holdings);
+    const founded = player.id === state.playerId ? state.founded : player.founded;
+    return {
+      id: player.id,
+      name: player.name,
+      cash,
+      holdings,
+      founded,
+      total: player.id === state.playerId ? totalAssets() : (cash || 0) + holdingsValueOf(holdings),
+      bot: false,
+    };
+  }
+
+  function mergePlayers(remotePlayers) {
+    const byId = new Map((state.players || []).map((item) => [item.id, item]));
+    (remotePlayers || []).forEach((row) => {
+      if (!row?.id || row.bot || String(row.id).startsWith("bot-")) return;
+      if (row.id === state.playerId) return;
+      const next = {
+        id: row.id,
+        name: row.name || row.id,
+        cash: row.cash || 0,
+        holdings: cloneHoldings(row.holdings),
+        founded: row.founded || null,
+        total: 0,
+        bot: false,
+      };
+      const local = byId.get(row.id);
+      if (local) Object.assign(local, next);
+      else {
+        state.players.push(next);
+        byId.set(row.id, next);
+      }
+    });
+    purgeBots();
+    syncLocalPlayer();
+  }
 
   function random() {
     if (window.crypto?.getRandomValues) {
@@ -738,27 +968,38 @@
       terminal: false,
       seasonBreak: false,
       currentPlay: null,
-      playMode: "solo",
-      roomCode: "",
+      playMode: "global",
+      roomCode: "GLOBAL",
       playerId: session?.id || "guest",
       playerName: session?.nick || session?.id || "투자자",
       founded: null,
       ads: [],
       players: [],
       adDone: false,
+      sessionOpen: true,
     };
   }
 
   function isAuthority() {
-    return state.playMode !== "client";
+    return true;
   }
 
   function round1(value) {
     return Math.round(value * 10) / 10;
   }
 
-  function makeRoomCode() {
-    return Array.from({ length: 5 }, () => CODE_CHARS[Math.floor(random() * CODE_CHARS.length)]).join("");
+  function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
+  }
+
+  function makeId(prefix) {
+    return `${prefix}-${Math.floor(Math.random() * 1e9).toString(36)}`;
   }
 
   function bufToHex(buf) {
@@ -1016,11 +1257,12 @@
       if (actor.isLocal && !options.silent) recordTrade("sell", asset, qty, proceeds);
     }
     syncLocalPlayer();
+    if (state.active) markTouched(assetId);
     return { ok: true };
   }
 
   function listCompany(spec) {
-    const { ownerId, ownerName, name, symbol, sectorKey, seed, bot } = spec;
+    const { ownerId, ownerName, name, symbol, sectorKey, seed } = spec;
     const owner = getActor(ownerId);
     if (!owner) return { ok: false, err: "player" };
     const player = state.players.find((item) => item.id === ownerId);
@@ -1050,8 +1292,8 @@
       initialPrice: price,
       lastChange: 0,
       history: [price],
-      trend: 0.002,
-      noise: bot ? 0.012 : 0.01,
+      trend: 0.001,
+      noise: 0.022,
       risk: 4,
       color: PLAYER_COLORS[state.assets.length % PLAYER_COLORS.length],
       dividend: sectorKey === "retail" || sectorKey === "gold" ? 0.006 : 0,
@@ -1079,6 +1321,7 @@
     if (ownerId === state.playerId) state.founded = founded;
     if (player) player.founded = founded;
     syncLocalPlayer();
+    if (state.active) markTouched(id);
     return { ok: true, asset, cost, founderQty };
   }
 
@@ -1092,7 +1335,7 @@
     return shock;
   }
 
-  function publishAd(playerId, slogan, claim) {
+  function publishAd(playerId, slogan, claim, image) {
     const player = state.players.find((item) => item.id === playerId);
     const founded = playerId === state.playerId ? state.founded : player?.founded;
     if (!founded) return { ok: false, err: "company" };
@@ -1117,6 +1360,7 @@
       week: state.week,
       season: state.season,
       owner: playerId,
+      image: image || "",
     };
     asset.adWeeks = (asset.adWeeks || 0) + 1;
     state.ads = state.assets.filter((item) => item.ad && item.ad.week === state.week && item.ad.season === state.season).map((item) => ({
@@ -1125,28 +1369,19 @@
       name: item.name,
       slogan: item.ad.slogan,
       claim: item.ad.claim,
+      image: item.ad.image || "",
     }));
     attractAdFlow(asset);
     syncLocalPlayer();
+    if (state.active) markTouched(asset.id);
     return { ok: true, asset };
   }
 
   function attractAdFlow(asset) {
     const trust = asset.trust ?? 0.7;
     const over = (asset.adWeeks || 0) >= 3;
-    const buyChance = Math.max(0.08, trust * 0.55 - (over ? 0.18 : 0));
-    state.players.filter((player) => player.bot && player.id !== asset.founderId).forEach((bot) => {
-      if (random() > buyChance) return;
-      const qty = 1 + Math.floor(random() * 5);
-      executeTrade(bot.id, asset.id, "buy", qty, { silent: true });
-    });
-    if (over && random() < 0.35) {
-      asset.trust = Math.max(0.15, (asset.trust || 0.7) - 0.12);
-      state.players.filter((player) => player.bot).slice(0, 2).forEach((bot) => {
-        const qty = Math.min(4, bot.holdings?.[asset.id]?.qty || 0);
-        if (qty > 0) executeTrade(bot.id, asset.id, "sell", qty, { silent: true });
-      });
-    }
+    applyFlow(asset, over ? -2 : Math.max(1, Math.round(trust * 4)));
+    if (over) asset.trust = Math.max(0.15, (asset.trust || 0.7) - 0.12);
   }
 
   function resolveAdTruth(asset) {
@@ -1166,378 +1401,849 @@
     }
   }
 
-  function spawnBots(count) {
-    const n = Math.max(3, Math.min(6, count || 4));
-    shuffled(BOT_INVESTORS).slice(0, n).forEach((bot, index) => {
-      if (state.players.some((item) => item.id === bot.id)) return;
-      const cash = 420 + Math.floor(random() * 220);
-      const player = {
-        id: bot.id,
-        name: bot.name,
-        cash,
-        holdings: freshHoldings(state.assets),
-        founded: null,
-        total: cash,
-        bot: true,
-      };
-      state.players.push(player);
-      const firm = BOT_FIRMS[index % BOT_FIRMS.length];
-      listCompany({
-        ownerId: bot.id,
-        ownerName: bot.name,
-        name: firm.name,
-        symbol: firm.symbol,
-        sectorKey: firm.sectorKey,
-        seed: Math.min(player.cash - 40, firm.seed),
-        bot: true,
-      });
+  function spawnBots() {
+    /* bots removed: only student players move the market */
+  }
+
+  function clearBotTimers() {}
+
+  function scheduleBots() {}
+
+  function botTick() {}
+
+  function stopWorldSync() {
+    if (worldSync.pollTimer) clearInterval(worldSync.pollTimer);
+    if (worldSync.clockTimer) clearInterval(worldSync.clockTimer);
+    if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
+    if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
+    worldSync.pollTimer = null;
+    worldSync.clockTimer = null;
+    worldSync.kstTimer = null;
+    worldSync.putTimer = null;
+  }
+
+  function kstNowMs() {
+    return Date.now() + (kstClock.offsetMs || 0);
+  }
+
+  function parseKstParts(ms) {
+    const instant = new Date(ms);
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "short",
+      hourCycle: "h23",
     });
-    syncLocalPlayer();
-  }
-
-  function clearBotTimers() {
-    botTimers.forEach((id) => clearTimeout(id));
-    botTimers = [];
-  }
-
-  function scheduleBots() {
-    clearBotTimers();
-    if (!isAuthority() || !state.active) return;
-    [900, 2400, 4800].forEach((delay) => {
-      botTimers.push(setTimeout(() => {
-        botTick();
-        renderAll();
-        if (state.playMode === "host") broadcastState();
-      }, delay));
+    const map = {};
+    fmt.formatToParts(instant).forEach((part) => {
+      if (part.type !== "literal") map[part.type] = part.value;
     });
-  }
-
-  function botTick() {
-    if (!isAuthority() || !state.active || state.locked) return;
-    state.players.filter((player) => player.bot).forEach((bot) => {
-      if (random() > 0.62) return;
-      const advertised = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week);
-      const pool = advertised.length && random() < 0.45 ? advertised : state.assets;
-      const asset = pool[Math.floor(random() * pool.length)];
-      if (!asset) return;
-      const holding = ensureHolding(bot.holdings, asset.id);
-      let side = random() > 0.5 ? "buy" : "sell";
-      if (asset.ad && (asset.trust || 0) > 0.6 && random() < 0.55) side = "buy";
-      if (asset.ad && (asset.trust || 0) < 0.35) side = "sell";
-      const qty = 1 + Math.floor(random() * 6);
-      if (side === "sell" && holding.qty < 1) side = "buy";
-      executeTrade(bot.id, asset.id, side, qty, { silent: true });
-    });
-    syncLocalPlayer();
-  }
-
-  function fallbackToSolo(reason) {
-    destroyNet();
-    state.playMode = "solo";
-    state.roomCode = "SOLO";
-    if (!state.players.some((item) => item.bot)) spawnBots(4);
-    toast("📡", "솔로로 전환", reason || "연결이 끊어져 봇 시장으로 이어갑니다.");
-    renderAll();
-  }
-
-  function destroyNet() {
-    try { net.conns.forEach((conn) => conn.close()); } catch { /* ignore */ }
-    try { net.hostConn?.close(); } catch { /* ignore */ }
-    try { net.peer?.destroy(); } catch { /* ignore */ }
-    net.peer = null;
-    net.conns = [];
-    net.hostConn = null;
-    net.connecting = false;
-  }
-
-  function sendTo(conn, payload) {
-    try { conn.send(payload); } catch { /* ignore */ }
-  }
-
-  function broadcastState(extra = {}) {
-    if (state.playMode !== "host") return;
-    syncLocalPlayer();
-    const snapshot = buildSnapshot();
-    net.conns.forEach((conn) => sendTo(conn, { type: "state", snapshot, ...extra }));
-  }
-
-  function buildSnapshot() {
     return {
+      y: Number(map.year),
+      mo: Number(map.month),
+      d: Number(map.day),
+      h: Number(map.hour),
+      mi: Number(map.minute),
+      s: Number(map.second),
+      weekday: map.weekday,
+      ymd: `${map.year}-${map.month}-${map.day}`,
+    };
+  }
+
+  function kstStamp(ms = kstNowMs()) {
+    const p = parseKstParts(ms);
+    return `${p.mo}/${p.d} ${String(p.h).padStart(2, "0")}:${String(p.mi).padStart(2, "0")}`;
+  }
+
+  async function refreshKst() {
+    const sources = [
+      {
+        url: "https://worldtimeapi.org/api/timezone/Asia/Seoul",
+        parse(data) {
+          if (Number.isFinite(data.unixtime)) return data.unixtime * 1000;
+          const ms = Date.parse(data.datetime);
+          return Number.isFinite(ms) ? ms : null;
+        },
+      },
+      {
+        url: "https://timeapi.io/api/Time/current/zone?timeZone=Asia/Seoul",
+        parse(data) {
+          if (data?.year) {
+            const iso = `${data.year}-${String(data.month).padStart(2, "0")}-${String(data.day).padStart(2, "0")}T${String(data.hour).padStart(2, "0")}:${String(data.minute).padStart(2, "0")}:${String(data.seconds || 0).padStart(2, "0")}+09:00`;
+            const ms = Date.parse(iso);
+            if (Number.isFinite(ms)) return ms;
+          }
+          if (data?.dateTime) {
+            const raw = String(data.dateTime);
+            const ms = Date.parse(raw.includes("+") || raw.endsWith("Z") ? raw : `${raw}+09:00`);
+            return Number.isFinite(ms) ? ms : null;
+          }
+          return null;
+        },
+      },
+      {
+        url: "https://timeapi.io/api/time/current/zone?timeZone=Asia/Seoul",
+        parse(data) {
+          if (data?.dateTime) {
+            const raw = String(data.dateTime);
+            const ms = Date.parse(raw.includes("+") || raw.endsWith("Z") ? raw : `${raw}+09:00`);
+            return Number.isFinite(ms) ? ms : null;
+          }
+          return null;
+        },
+      },
+      {
+        url: "https://worldclockapi.com/api/json/kst/now",
+        parse(data) {
+          const ms = Date.parse(data.currentDateTime);
+          return Number.isFinite(ms) ? ms : null;
+        },
+      },
+    ];
+    for (const src of sources) {
+      try {
+        const res = await fetch(src.url, { cache: "no-store" });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const serverMs = src.parse(data);
+        if (!Number.isFinite(serverMs)) continue;
+        kstClock.offsetMs = serverMs - Date.now();
+        kstClock.ok = true;
+        kstClock.fetchedAt = Date.now();
+        kstClock.source = src.url;
+        kstClock.parts = parseKstParts(serverMs);
+        return true;
+      } catch {
+        // try next public KST endpoint
+      }
+    }
+    kstClock.ok = false;
+    kstClock.parts = null;
+    return false;
+  }
+
+  function isWeekend(parts) {
+    return parts.weekday === "Sat" || parts.weekday === "Sun";
+  }
+
+  function minutesOf(h, m) {
+    return h * 60 + m;
+  }
+
+  function periodId(ymd, n) {
+    return `${ymd}-p${n}`;
+  }
+
+  function parsePeriodId(id) {
+    const match = /^(\d{4}-\d{2}-\d{2})-p(\d+)$/.exec(id || "");
+    if (!match) return null;
+    return { ymd: match[1], n: Number(match[2]) };
+  }
+
+  function shiftYmd(ymd, days) {
+    const [y, mo, d] = ymd.split("-").map(Number);
+    const utc = Date.UTC(y, mo - 1, d + days, 4, 0, 0);
+    return parseKstParts(utc).ymd;
+  }
+
+  function weekdayOfYmd(ymd) {
+    const [y, mo, d] = ymd.split("-").map(Number);
+    const utc = Date.UTC(y, mo - 1, d, 4, 0, 0);
+    return parseKstParts(utc).weekday;
+  }
+
+  function previousSchoolYmd(ymd) {
+    let cursor = shiftYmd(ymd, -1);
+    while (weekdayOfYmd(cursor) === "Sat" || weekdayOfYmd(cursor) === "Sun") {
+      cursor = shiftYmd(cursor, -1);
+    }
+    return cursor;
+  }
+
+  function nextSchoolYmd(ymd) {
+    let cursor = shiftYmd(ymd, 1);
+    while (weekdayOfYmd(cursor) === "Sat" || weekdayOfYmd(cursor) === "Sun") {
+      cursor = shiftYmd(cursor, 1);
+    }
+    return cursor;
+  }
+
+  function lastEndedPeriodId(parts) {
+    if (!isWeekend(parts)) {
+      const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
+      let last = null;
+      PERIODS.forEach((slot) => {
+        if (nowMin >= minutesOf(slot.h, slot.m)) last = periodId(parts.ymd, slot.n);
+      });
+      if (last) return last;
+    }
+    return periodId(previousSchoolYmd(parts.ymd), 7);
+  }
+
+  function nextPeriodAfter(id) {
+    const parsed = parsePeriodId(id);
+    if (!parsed) return periodId(parseKstParts(kstNowMs()).ymd, 1);
+    if (parsed.n < 7) return periodId(parsed.ymd, parsed.n + 1);
+    return periodId(nextSchoolYmd(parsed.ymd), 1);
+  }
+
+  function duePeriodId(lastSettled, parts) {
+    const latest = lastEndedPeriodId(parts);
+    if (!lastSettled) return null;
+    const next = nextPeriodAfter(lastSettled);
+    return next <= latest ? next : null;
+  }
+
+  function nextSettlement(parts) {
+    if (!isWeekend(parts)) {
+      const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
+      const upcoming = PERIODS.find((slot) => nowMin < minutesOf(slot.h, slot.m));
+      if (upcoming) return { ymd: parts.ymd, slot: upcoming };
+    }
+    const ymd = isWeekend(parts) || minutesOf(parts.h, parts.mi) >= minutesOf(16, 0)
+      ? nextSchoolYmd(parts.ymd)
+      : parts.ymd;
+    return { ymd, slot: PERIODS[0] };
+  }
+
+  function isMarketOpen(parts) {
+    if (isWeekend(parts)) return false;
+    return minutesOf(parts.h, parts.mi) + parts.s / 60 < minutesOf(16, 0);
+  }
+
+  function clockLabel() {
+    if (!kstClock.ok || !kstClock.parts) {
+      return { line: "한국 표준시 확인 중", hint: "수업 종료 시각은 표준시 서버를 기준으로 합니다.", open: false };
+    }
+    const parts = kstClock.parts;
+    const next = nextSettlement(parts);
+    const open = isMarketOpen(parts);
+    const targetMin = minutesOf(next.slot.h, next.slot.m);
+    const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
+    let remain = targetMin - nowMin;
+    if (next.ymd !== parts.ymd) {
+      const days = next.ymd > parts.ymd ? 1 : 0;
+      remain = minutesOf(24, 0) - nowMin + minutesOf(next.slot.h, next.slot.m) + days * 24 * 60;
+      if (isWeekend(parts) || parts.weekday === "Fri" && nowMin >= minutesOf(16, 0)) {
+        const map = { Fri: 3, Sat: 2, Sun: 1 };
+        remain = (map[parts.weekday] || 1) * 24 * 60 - nowMin + minutesOf(9, 20);
+      }
+    }
+    const mins = Math.max(0, Math.floor(remain));
+    const hh = Math.floor(mins / 60);
+    const mm = mins % 60;
+    const count = hh > 0 ? `${hh}시간 ${mm}분` : `${mm}분`;
+    const kst = `KST ${String(parts.h).padStart(2, "0")}:${String(parts.mi).padStart(2, "0")}`;
+    if (!open) {
+      return {
+        line: `장 마감 (수업 시간 외) · ${kst}`,
+        hint: `다음 정산 ${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}까지 ${count}`,
+        open: false,
+      };
+    }
+    return {
+      line: `${kst} · 다음 정산 ${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}까지 ${count}`,
+      hint: "한국 표준시로 교시가 끝나는 시각에 전 세계 시장이 한 번 정산됩니다.",
+      open: true,
+    };
+  }
+
+  function publicAsset(asset) {
+    return {
+      id: asset.id,
+      symbol: asset.symbol,
+      name: asset.name,
+      sector: asset.sector,
+      sectorKey: asset.sectorKey,
+      price: asset.price,
+      initialPrice: asset.initialPrice,
+      lastChange: asset.lastChange,
+      history: asset.history?.slice(-16) || [asset.price],
+      trend: asset.trend,
+      noise: asset.noise,
+      risk: asset.risk,
+      color: asset.color,
+      dividend: asset.dividend,
+      float: asset.float,
+      weekFlow: asset.weekFlow,
+      lastFlow: asset.lastFlow,
+      weekOpen: asset.weekOpen,
+      playerCompany: asset.playerCompany,
+      founderId: asset.founderId,
+      founderName: asset.founderName,
+      trust: asset.trust,
+      adWeeks: asset.adWeeks,
+      ad: asset.ad,
+      opsNote: asset.opsNote,
+      opsShock: asset.opsShock || 0,
+    };
+  }
+
+  function hydrateAsset(row) {
+    return {
+      trend: 0.002,
+      noise: 0.01,
+      risk: 4,
+      color: PLAYER_COLORS[0],
+      dividend: 0,
+      float: 120,
+      history: [row.price],
+      lastChange: 0,
+      weekFlow: 0,
+      lastFlow: 0,
+      trust: 0.72,
+      adWeeks: 0,
+      ad: null,
+      opsNote: "",
+      opsShock: 0,
+      playerCompany: false,
+      founderId: null,
+      founderName: "",
+      ...row,
+    };
+  }
+
+  function eventIndex(event) {
+    if (!event) return 0;
+    const idx = EVENTS.findIndex((item) => item.title === event.title);
+    return idx >= 0 ? idx : 0;
+  }
+
+  function hydrateEvent(key, fallback) {
+    if (Number.isInteger(key) && EVENTS[key]) return EVENTS[key];
+    if (fallback?.title) {
+      const found = EVENTS.find((item) => item.title === fallback.title);
+      if (found) return found;
+    }
+    return fallback || EVENTS[0];
+  }
+
+  function touchPresence() {
+    if (!state || !session) return;
+    const stamp = kstClock.ok ? kstStamp() : "";
+    const next = { id: state.playerId, name: state.playerName, lastSeen: stamp };
+    const list = worldSync.seenPlayers.filter((item) => item.id !== next.id && item.id);
+    list.unshift(next);
+    worldSync.seenPlayers = list.slice(0, 24);
+  }
+
+  function buildWorldPayload() {
+    touchPresence();
+    const deck = (worldSync.eventDeck && worldSync.eventDeck.length)
+      ? worldSync.eventDeck
+      : state.eventDeck.map((event) => eventIndex(event));
+    return {
+      revision: (worldSync.revision || 0) + 1,
+      updatedAt: kstClock.ok ? kstNowMs() : Date.now(),
       week: state.week,
       season: state.season,
-      locked: state.locked,
-      seasonBreak: state.seasonBreak,
-      roomCode: state.roomCode,
-      modeKey: state.modeKey,
+      lastSettledPeriodId: worldSync.lastSettledPeriodId || "",
+      eventKey: eventIndex(state.event),
+      eventDeck: deck,
       event: publicEvent(state.event),
-      assets: state.assets.map((asset) => ({
-        id: asset.id,
-        symbol: asset.symbol,
-        name: asset.name,
-        sector: asset.sector,
-        sectorKey: asset.sectorKey,
-        price: asset.price,
-        initialPrice: asset.initialPrice,
-        lastChange: asset.lastChange,
-        history: asset.history?.slice(-16) || [asset.price],
-        trend: asset.trend,
-        noise: asset.noise,
-        risk: asset.risk,
-        color: asset.color,
-        dividend: asset.dividend,
-        float: asset.float,
-        weekFlow: asset.weekFlow,
-        lastFlow: asset.lastFlow,
-        weekOpen: asset.weekOpen,
-        playerCompany: asset.playerCompany,
-        founderId: asset.founderId,
-        founderName: asset.founderName,
-        trust: asset.trust,
-        adWeeks: asset.adWeeks,
-        ad: asset.ad,
-        opsNote: asset.opsNote,
-      })),
+      assets: state.assets.map(publicAsset),
       ads: state.ads,
-      players: state.players.map((player) => ({
-        id: player.id,
-        name: player.name,
-        cash: player.cash,
-        holdings: cloneHoldings(player.holdings),
-        founded: player.founded,
-        total: playerTotal(player),
-        bot: !!player.bot,
+      players: humansRanked().map(publicPlayer).filter(Boolean).slice(0, 40),
+      botsSpawned: false,
+      seenPlayers: worldSync.seenPlayers.map((item) => ({
+        id: item.id,
+        name: item.name,
+        lastSeen: item.lastSeen || "",
+      })),
+      chatRooms: (worldSync.chatRooms || []).map((room) => ({
+        id: room.id,
+        name: room.name,
+        createdBy: room.createdBy,
+        createdByName: room.createdByName,
+        createdAt: room.createdAt,
+        messages: (room.messages || []).slice(-CHAT_CAP).map((msg) => ({
+          id: msg.id,
+          authorId: msg.authorId,
+          authorName: msg.authorName,
+          text: msg.text,
+          ts: msg.ts,
+        })),
       })),
     };
   }
 
-  function applySnapshot(snapshot) {
-    if (!snapshot) return;
-    state.week = snapshot.week;
-    state.season = snapshot.season;
-    state.locked = snapshot.locked;
-    state.seasonBreak = snapshot.seasonBreak;
-    state.roomCode = snapshot.roomCode || state.roomCode;
-    state.event = snapshot.event;
-    state.assets = snapshot.assets || state.assets;
-    state.ads = snapshot.ads || [];
-    state.players = snapshot.players || state.players;
-    state.expected = {};
-    state.changes = {};
-    state.assets.forEach((asset) => ensureHolding(state.holdings, asset.id));
-    const me = state.players.find((item) => item.id === state.playerId);
-    if (me) {
-      state.cash = me.cash;
-      state.holdings = cloneHoldings(me.holdings);
-      state.founded = me.founded;
-      state.playerName = me.name || state.playerName;
-    }
-  }
-
-  function handleHostMessage(message, conn) {
-    if (!message || !isAuthority()) return;
-    if (message.type === "join") {
-      const incoming = message.player;
-      if (!incoming?.id) return;
-      if (incoming.id === state.playerId || state.players.some((item) => item.id === incoming.id && !item.bot)) {
-        sendTo(conn, { type: "reject", reason: "duplicate" });
+  function mergeChatRooms(remoteRooms) {
+    const byId = new Map((worldSync.chatRooms || []).map((room) => [room.id, room]));
+    (remoteRooms || []).forEach((room) => {
+      const local = byId.get(room.id);
+      if (!local) {
+        byId.set(room.id, {
+          ...room,
+          messages: [...(room.messages || [])].slice(-CHAT_CAP),
+        });
         return;
       }
-      incoming.bot = false;
-      incoming.holdings = incoming.holdings || freshHoldings(state.assets);
-      state.assets.forEach((asset) => ensureHolding(incoming.holdings, asset.id));
-      incoming.total = playerTotal(incoming);
-      state.players.push(incoming);
-      broadcastState();
-      renderAll();
-      toast("🤝", "참가", `${incoming.name} 님이 방에 들어왔습니다.`);
-      return;
+      const msgs = new Map((local.messages || []).map((msg) => [msg.id, msg]));
+      (room.messages || []).forEach((msg) => {
+        if (msg?.id) msgs.set(msg.id, msg);
+      });
+      local.name = room.name || local.name;
+      local.messages = [...msgs.values()].sort((a, b) => String(a.ts).localeCompare(String(b.ts))).slice(-CHAT_CAP);
+    });
+    worldSync.chatRooms = [...byId.values()];
+    if (activeChatRoomId && !byId.has(activeChatRoomId)) activeChatRoomId = "";
+    if (!activeChatRoomId && worldSync.chatRooms[0]) activeChatRoomId = worldSync.chatRooms[0].id;
+  }
+
+  function mergeWorld(remote, options = {}) {
+    if (!remote || typeof remote !== "object") return { settled: false };
+    const preferLocal = !!options.preferLocal;
+    const prevSettled = worldSync.lastSettledPeriodId;
+    worldSync.revision = Math.max(worldSync.revision || 0, remote.revision || 0);
+    worldSync.updatedAt = Math.max(worldSync.updatedAt || 0, remote.updatedAt || 0);
+    if (remote.lastSettledPeriodId && (!worldSync.lastSettledPeriodId || remote.lastSettledPeriodId > worldSync.lastSettledPeriodId)) {
+      worldSync.lastSettledPeriodId = remote.lastSettledPeriodId;
     }
-    if (message.type === "trade") {
-      const result = executeTrade(message.playerId, message.assetId, message.side, message.qty, { silent: true });
-      if (message.playerId === state.playerId && result.ok) {
-        const asset = assetById(message.assetId);
-        if (asset) recordTrade(message.side, asset, message.qty, asset.price * message.qty);
+    if (remote.eventDeck?.length) worldSync.eventDeck = remote.eventDeck;
+    worldSync.botsSpawned = worldSync.botsSpawned || !!remote.botsSpawned;
+    const seen = new Map((worldSync.seenPlayers || []).map((item) => [item.id, item]));
+    (remote.seenPlayers || []).forEach((item) => {
+      if (item?.id) seen.set(item.id, item);
+    });
+    worldSync.seenPlayers = [...seen.values()];
+    mergeChatRooms(remote.chatRooms);
+
+    const byId = new Map(state.assets.map((asset) => [asset.id, asset]));
+    (remote.assets || []).forEach((row) => {
+      if (!row?.id) return;
+      if (row.bot || String(row.founderId || "").startsWith("bot-") || String(row.id || "").startsWith("co-bot")) return;
+      const local = byId.get(row.id);
+      if (!local) {
+        const added = hydrateAsset(row);
+        state.assets.push(added);
+        byId.set(row.id, added);
+        ensureHolding(state.holdings, row.id);
+        return;
       }
-      broadcastState();
-      renderAll();
-      return;
+      const keepPrice = preferLocal && worldSync.touched.has(row.id);
+      local.symbol = row.symbol || local.symbol;
+      local.name = row.name || local.name;
+      local.sector = row.sector || local.sector;
+      local.sectorKey = row.sectorKey || local.sectorKey;
+      local.founderId = row.founderId || local.founderId;
+      local.founderName = row.founderName || local.founderName;
+      local.playerCompany = !!row.playerCompany || local.playerCompany;
+      local.float = row.float || local.float;
+      local.ad = row.ad || local.ad;
+      local.adWeeks = row.adWeeks ?? local.adWeeks;
+      local.trust = row.trust ?? local.trust;
+      local.opsNote = row.opsNote || local.opsNote;
+      if (!keepPrice) {
+        local.price = row.price;
+        local.lastChange = row.lastChange;
+        local.weekFlow = row.weekFlow;
+        local.lastFlow = row.lastFlow;
+        local.weekOpen = row.weekOpen;
+        local.history = row.history || local.history;
+      }
+    });
+
+    const weekChanged = remote.week && (remote.week !== state.week || remote.season !== state.season);
+    if (!preferLocal) {
+      if (remote.week) state.week = remote.week;
+      if (remote.season) state.season = remote.season;
+      if (remote.event || Number.isInteger(remote.eventKey)) {
+        state.event = hydrateEvent(remote.eventKey, remote.event);
+      }
+      state.ads = remote.ads || state.assets.filter((asset) => asset.ad && asset.ad.week === state.week).map((asset) => ({
+        assetId: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        slogan: asset.ad.slogan,
+        claim: asset.ad.claim,
+        image: asset.ad.image || "",
+      }));
     }
-    if (message.type === "found") {
-      listCompany({ ...message.spec, ownerId: message.playerId });
-      broadcastState();
-      renderAll();
-      return;
+
+    mergePlayers(remote.players);
+    purgeBots();
+
+    state.assets.forEach((asset) => ensureHolding(state.holdings, asset.id));
+    if (state.assets.some((asset) => asset.founderId === state.playerId)) {
+      const mine = state.assets.find((asset) => asset.founderId === state.playerId);
+      state.founded = state.founded || { assetId: mine.id, name: mine.name, symbol: mine.symbol, sectorKey: mine.sectorKey, seed: 0 };
     }
-    if (message.type === "ad") {
-      publishAd(message.playerId, message.slogan, message.claim);
-      broadcastState();
-      renderAll();
-      return;
+    const settled = !preferLocal && prevSettled && worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId !== prevSettled;
+    return { settled, weekChanged };
+  }
+
+  async function fetchWorld() {
+    const res = await fetch(WORLD_URL, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error("world-get");
+    return res.json();
+  }
+
+  async function putWorld(payload) {
+    const body = JSON.stringify(payload);
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    let res = await fetch(WORLD_URL, { method: "PUT", headers, body });
+    if (res.status === 404) {
+      res = await fetch(WORLD_URL, { method: "PUT", headers, body });
     }
-    if (message.type === "wallet") {
-      const player = state.players.find((item) => item.id === message.playerId);
-      if (player && message.playerId !== state.playerId) {
-        player.cash = message.cash;
-        player.total = playerTotal(player);
-        broadcastState();
-        renderAll();
+    if (!res.ok && res.status !== 201) throw new Error("world-put");
+    worldSync.revision = payload.revision;
+    worldSync.updatedAt = payload.updatedAt;
+    worldSync.touched.clear();
+    return true;
+  }
+
+  async function pushWorld() {
+    if (worldSync.putting || !state?.active) return;
+    worldSync.putting = true;
+    try {
+      let remote = null;
+      try { remote = await fetchWorld(); } catch { remote = null; }
+      if (remote) mergeWorld(remote, { preferLocal: true });
+      const payload = buildWorldPayload();
+      await putWorld(payload);
+    } catch {
+      toast("📡", "동기화 지연", "공유 시장에 잠시 닿지 못했습니다. 곧 다시 시도합니다.");
+    } finally {
+      worldSync.putting = false;
+      if (worldSync.dirty) {
+        worldSync.dirty = false;
+        queuePush();
       }
     }
   }
 
-  function handleClientMessage(message) {
-    if (!message) return;
-    if (message.type === "reject") {
-      toast("⛔", "입장 거부", message.reason === "duplicate" ? "이 아이디는 이미 방에 있습니다." : "방에 들어갈 수 없습니다.");
-      fallbackToSolo("중복 로그인으로 솔로로 전환합니다.");
-      return;
-    }
-    if (message.type === "state") {
-      const before = totalAssets();
-      applySnapshot(message.snapshot);
-      if (message.weekClosed) {
-        showWeekResult(totalAssets() - before, totalAssets(), message.dividend || 0);
+  function queuePush() {
+    worldSync.dirty = true;
+    if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
+    worldSync.putTimer = setTimeout(() => {
+      worldSync.dirty = false;
+      pushWorld();
+    }, PUT_DEBOUNCE_MS);
+  }
+
+  function markTouched(assetId) {
+    if (assetId) worldSync.touched.add(assetId);
+    queuePush();
+  }
+
+  async function pullWorld() {
+    if (!state?.active || worldSync.putting) return;
+    try {
+      const remote = await fetchWorld();
+      if (!remote) {
+        queuePush();
+        return;
       }
-      if (message.weekStart) {
-        closeModal(els.weekModal);
+      if ((remote.revision || 0) < worldSync.revision) return;
+      const before = totalAssets();
+      const result = mergeWorld(remote, { preferLocal: false });
+      if (result.weekChanged) {
+        computeWeekExpectations();
         resetLocalWeek();
       }
+      if (result.settled) {
+        showWeekResult(totalAssets() - before, totalAssets(), 0);
+      }
       renderAll();
-    }
-  }
-
-  function bindConn(conn, asHost) {
-    conn.on("data", (message) => {
-      if (asHost) handleHostMessage(message, conn);
-      else handleClientMessage(message);
-    });
-    conn.on("close", () => {
-      net.conns = net.conns.filter((item) => item !== conn);
-      if (!asHost) fallbackToSolo("방장과의 연결이 끊어졌습니다.");
-      else {
-        renderAll();
-        broadcastState();
-      }
-    });
-    conn.on("error", () => {
-      if (!asHost) fallbackToSolo("PeerJS 오류로 솔로로 전환합니다.");
-    });
-  }
-
-  function waitPeerOpen(peer) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("timeout")), 8000);
-      peer.on("open", (id) => {
-        clearTimeout(timer);
-        resolve(id);
-      });
-      peer.on("error", (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
-  }
-
-  async function startHostRoom() {
-    if (typeof Peer === "undefined") {
-      fallbackToSolo("PeerJS를 불러오지 못해 솔로로 시작합니다.");
-      beginLocalGame("solo");
-      return;
-    }
-    els.lobbyStatus.textContent = "방을 여는 중…";
-    let lastErr;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const code = makeRoomCode();
-      destroyNet();
-      try {
-        net.peer = new Peer(PEER_PREFIX + code);
-        await waitPeerOpen(net.peer);
-        state.playMode = "host";
-        state.roomCode = code;
-        net.peer.on("connection", (conn) => {
-          net.conns.push(conn);
-          bindConn(conn, true);
-          conn.on("open", () => broadcastState());
-        });
-        net.peer.on("disconnected", () => {
-          if (state.active) fallbackToSolo("방장 연결이 끊겼습니다.");
-        });
-        spawnBots(3);
-        closeModal(els.lobbyModal);
-        beginLocalGame("host");
-        toast("🔑", "방 생성", `참가 코드 ${code}`);
-        return;
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    fallbackToSolo(lastErr ? "방을 열지 못해 솔로로 시작합니다." : "방 생성 실패");
-    beginLocalGame("solo");
-  }
-
-  async function joinHostRoom(code) {
-    const clean = String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-    if (clean.length < 4) {
-      els.lobbyStatus.textContent = "4–6자 코드를 입력하세요.";
-      return;
-    }
-    if (typeof Peer === "undefined") {
-      fallbackToSolo("PeerJS를 불러오지 못했습니다.");
-      beginLocalGame("solo");
-      return;
-    }
-    els.lobbyStatus.textContent = "방에 접속하는 중…";
-    destroyNet();
-    try {
-      net.peer = new Peer();
-      await waitPeerOpen(net.peer);
-      net.hostConn = net.peer.connect(PEER_PREFIX + clean, { reliable: true });
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("timeout")), 8000);
-        net.hostConn.on("open", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-        net.hostConn.on("error", reject);
-      });
-      bindConn(net.hostConn, false);
-      state.playMode = "client";
-      state.roomCode = clean;
-      resetLocalWeek();
-      sendTo(net.hostConn, {
-        type: "join",
-        player: {
-          id: state.playerId,
-          name: state.playerName,
-          cash: state.cash,
-          holdings: cloneHoldings(state.holdings),
-          founded: state.founded,
-          bot: false,
-        },
-      });
-      closeModal(els.lobbyModal);
-      if (!state.event) {
-        state.event = {
-          category: "연결", icon: "📡", title: "호스트 시세를 받는 중",
-          description: "방장의 시장 상태가 곧 동기화됩니다.",
-          themes: ["멀티플레이"], note: "광고와 수급을 보고 판단하세요.",
-        };
-      }
-      revealDesk();
-      toast("🚪", "입장", `방 ${clean}에 참가했습니다.`);
     } catch {
-      fallbackToSolo("방을 찾지 못해 솔로로 시작합니다.");
-      beginLocalGame("solo");
+      // poll again later
     }
   }
 
-  function sendWallet() {
-    if (state.playMode !== "client" || !net.hostConn) return;
-    sendTo(net.hostConn, {
-      type: "wallet",
-      playerId: state.playerId,
-      cash: state.cash,
+  function computeWeekExpectations() {
+    state.expected = {};
+    state.changes = {};
+    const event = state.event || EVENTS[0];
+    state.assets.forEach((asset) => {
+      asset.weekOpen = asset.weekOpen || asset.price;
+      const eventEffect = event.effects?.[asset.sectorKey || asset.id] || event.effects?.[asset.id] || 0;
+      const newsWeight = asset.playerCompany ? 0.28 : 1;
+      const momentum = (asset.lastChange || 0) * .08;
+      const expected = eventEffect * newsWeight + (asset.trend || 0) + momentum;
+      const noise = (random() * 2 - 1) * (asset.noise || 0.01) * (asset.playerCompany ? 0.45 : 1);
+      state.expected[asset.id] = expected;
+      state.changes[asset.id] = Math.max(-.28, Math.min(.28, expected + noise));
     });
+  }
+
+  function applySettlementPrices() {
+    botTick();
+    state.assets.forEach((asset) => {
+      if (asset.playerCompany) rollCompanyOps(asset);
+      const newsChange = state.changes[asset.id] || 0;
+      const extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
+      asset.price = Math.max(5, round1(asset.price * (1 + extra)));
+      if (asset.playerCompany) resolveAdTruth(asset);
+      const open = asset.weekOpen || asset.history[asset.history.length - 1] || asset.price;
+      asset.lastChange = open > 0 ? (asset.price - open) / open : extra;
+      asset.lastFlow = asset.weekFlow || 0;
+      asset.history = [...(asset.history || []), asset.price].slice(-16);
+      worldSync.touched.add(asset.id);
+    });
+  }
+
+  function advanceSharedWeek() {
+    if (state.week >= MAX_WEEKS) {
+      state.season += 1;
+      state.week = 1;
+      const deckIdx = shuffled(EVENTS.map((_, i) => i)).slice(0, MAX_WEEKS);
+      worldSync.eventDeck = deckIdx;
+      state.eventDeck = deckIdx.map((i) => EVENTS[i]);
+      state.goal = Math.round(state.goal * 1.12);
+    } else {
+      state.week += 1;
+    }
+    const deck = worldSync.eventDeck?.length ? worldSync.eventDeck : state.eventDeck.map((event) => eventIndex(event));
+    worldSync.eventDeck = deck;
+    state.event = EVENTS[deck[(state.week - 1) % deck.length]] || shuffled(EVENTS)[0];
+    state.assets.forEach((asset) => {
+      asset.weekOpen = asset.price;
+      asset.weekFlow = 0;
+      if (asset.ad && (asset.ad.week !== state.week || asset.ad.season !== state.season)) asset.ad = null;
+    });
+    computeWeekExpectations();
+    resetLocalWeek();
+  }
+
+  async function settlePeriod(periodKey, options = {}) {
+    if (!state?.active) return false;
+    try {
+      const remote = await fetchWorld();
+      if (remote) mergeWorld(remote, { preferLocal: false });
+    } catch {
+      if (!options.manual) return false;
+    }
+    if (!options.manual && worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId >= periodKey) return false;
+    const before = totalAssets();
+    applySettlementPrices();
+    let localDividend = 0;
+    if (state.week % 4 === 0) {
+      state.assets.forEach((asset) => {
+        if (!(asset.dividend > 0)) return;
+        const qty = state.holdings[asset.id]?.qty || 0;
+        localDividend += asset.price * qty * asset.dividend;
+      });
+      if (localDividend > 0) {
+        state.cash = round1(state.cash + localDividend);
+        toast("💰", "분기 배당 입금", `${money(localDividend)}이 현금 계좌에 들어왔습니다.`);
+      }
+    }
+    const after = totalAssets();
+    if (after > 0 && state.cash / after >= .3) state.cashSafeWeeks += 1;
+    checkMissions();
+    checkBadges();
+    showWeekResult(after - before, after, localDividend);
+    worldSync.lastSettledPeriodId = periodKey;
+    advanceSharedWeek();
+    state.locked = true;
+    syncLocalPlayer();
+    await pushWorld();
+    renderAll();
+    return true;
+  }
+
+  async function maybeSettleFromClock() {
+    if (!state?.active || !kstClock.ok || !kstClock.parts) return;
+    kstClock.parts = parseKstParts(kstNowMs());
+    if (!worldSync.lastSettledPeriodId) {
+      worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
+      queuePush();
+      return;
+    }
+    const due = duePeriodId(worldSync.lastSettledPeriodId, kstClock.parts);
+    if (due) await settlePeriod(due);
+  }
+
+  function renderClock() {
+    const info = clockLabel();
+    if (state) state.sessionOpen = info.open;
+    if (els.periodClock) els.periodClock.textContent = info.line;
+    if (els.closeMarketHint) els.closeMarketHint.textContent = info.hint;
+    if (els.lobbyClock) els.lobbyClock.textContent = info.line;
+    if (els.playerCount) {
+      const n = worldSync.seenPlayers?.length || state?.players?.filter((item) => !item.bot).length || 0;
+      els.playerCount.textContent = n ? `접속 ${n}명` : "";
+    }
+  }
+
+  async function tickClock() {
+    if (kstClock.ok) kstClock.parts = parseKstParts(kstNowMs());
+    renderClock();
+    await maybeSettleFromClock();
+    if (state?.active) renderRoom();
+  }
+
+  function startWorldLoop() {
+    stopWorldSync();
+    worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
+    worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
+    worldSync.kstTimer = setInterval(() => { refreshKst().then(() => tickClock()); }, KST_POLL_MS);
+    window.addEventListener("focus", onWorldFocus);
+  }
+
+  function onWorldFocus() {
+    refreshKst().then(() => tickClock());
+    pullWorld();
+  }
+
+  async function enterGlobalMarket() {
+    if (els.lobbyStatus) els.lobbyStatus.textContent = "한국 표준시와 공유 시장을 불러오는 중…";
+    await refreshKst();
+    if (!kstClock.ok) {
+      if (els.lobbyStatus) els.lobbyStatus.textContent = "표준시 서버에 닿지 못했습니다. 다시 시도하세요.";
+      toast("⏰", "표준시 필요", "장치 시간이 아니라 한국 표준시 서버에 연결해야 교시 정산을 합니다.");
+      return;
+    }
+    try {
+      const remote = await fetchWorld();
+      if (remote) mergeWorld(remote, { preferLocal: false });
+      else worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
+    } catch {
+      worldSync.lastSettledPeriodId = worldSync.lastSettledPeriodId || lastEndedPeriodId(kstClock.parts);
+    }
+    if (!worldSync.botsSpawned && !state.players.some((item) => item.bot)) {
+      spawnBots(4);
+      worldSync.botsSpawned = true;
+    }
+    if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
+    if (worldSync.eventDeck?.length) {
+      state.eventDeck = worldSync.eventDeck.map((i) => EVENTS[i] || EVENTS[0]);
+      state.event = hydrateEvent(worldSync.eventDeck[state.week - 1], state.event);
+    }
+    closeModal(els.lobbyModal);
+    beginLocalGame();
+    startWorldLoop();
+    queuePush();
+    toast("🌐", "단일 시장", "솔로·멀티 없이 같은 시장입니다. 교시가 끝나면 함께 정산됩니다.");
+  }
+
+  function compressAdImage(file) {
+    return new Promise((resolve, reject) => {
+      if (!file || !file.type.startsWith("image/")) {
+        resolve("");
+        return;
+      }
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const max = 400;
+        let w = img.width;
+        let h = img.height;
+        if (w > max || h > max) {
+          const scale = max / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        let quality = 0.6;
+        let data = canvas.toDataURL("image/jpeg", quality);
+        while (data.length > 80000 && quality > 0.28) {
+          quality -= 0.1;
+          data = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(data);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("image"));
+      };
+      img.src = url;
+    });
+  }
+
+  function renderChat() {
+    if (!els.chatLog) return;
+    const rooms = worldSync.chatRooms || [];
+    if (els.chatRoomCount) els.chatRoomCount.textContent = `${rooms.length}개 방`;
+    if (els.chatRoomSelect) {
+      els.chatRoomSelect.innerHTML = rooms.length
+        ? rooms.map((room) => `<option value="${room.id}" ${room.id === activeChatRoomId ? "selected" : ""}>${room.name}</option>`).join("")
+        : `<option value="">방 없음</option>`;
+    }
+    const room = rooms.find((item) => item.id === activeChatRoomId);
+    if (!room) {
+      els.chatLog.innerHTML = `<li class="empty-log">방을 만들거나 골라 대화를 시작하세요.</li>`;
+      return;
+    }
+    if (!room.messages?.length) {
+      els.chatLog.innerHTML = `<li class="empty-log">아직 메시지가 없습니다.</li>`;
+      return;
+    }
+    els.chatLog.innerHTML = room.messages.map((msg) => `
+      <li>
+        <b>${msg.authorName || "익명"}</b>
+        <span>${msg.text}</span>
+        <time>${msg.ts || ""}</time>
+      </li>
+    `).join("");
+    els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  }
+
+  function createChatRoom(name) {
+    const title = String(name || "").trim().slice(0, 16);
+    if (title.length < 2) return false;
+    const room = {
+      id: makeId("chat"),
+      name: title,
+      createdBy: state.playerId,
+      createdByName: state.playerName,
+      createdAt: kstStamp(),
+      messages: [],
+    };
+    worldSync.chatRooms = worldSync.chatRooms || [];
+    worldSync.chatRooms.push(room);
+    activeChatRoomId = room.id;
+    queuePush();
+    renderChat();
+    return true;
+  }
+
+  function sendChat(text) {
+    const body = String(text || "").trim().slice(0, 80);
+    if (!body || !activeChatRoomId) return false;
+    const room = (worldSync.chatRooms || []).find((item) => item.id === activeChatRoomId);
+    if (!room) return false;
+    room.messages = room.messages || [];
+    room.messages.push({
+      id: makeId("msg"),
+      authorId: state.playerId,
+      authorName: state.playerName,
+      text: body,
+      ts: kstClock.ok ? kstStamp() : "",
+    });
+    room.messages = room.messages.slice(-CHAT_CAP);
+    queuePush();
+    renderChat();
+    return true;
+  }
+
+  function destroyNet() {
+    stopWorldSync();
+    window.removeEventListener("focus", onWorldFocus);
+  }
+
+  function sendWallet() {}
+
+  function broadcastState() {
+    queuePush();
+  }
+
+  function buildSnapshot() {
+    return buildWorldPayload();
+  }
+
+  function applySnapshot(snapshot) {
+    mergeWorld(snapshot, { preferLocal: false });
   }
 
   function hideDesk() {
@@ -1576,11 +2282,18 @@
     }
     els.adError.hidden = true;
     els.adSlogan.value = "";
+    pendingAdImage = "";
+    if (els.adImage) els.adImage.value = "";
     openModal(els.adModal);
   }
 
   function submitFound(event) {
     event.preventDefault();
+    if (!state.sessionOpen) {
+      els.foundError.hidden = false;
+      els.foundError.textContent = "수업 시간 외에는 상장할 수 없습니다.";
+      return;
+    }
     const spec = {
       ownerId: state.playerId,
       ownerName: state.playerName,
@@ -1589,11 +2302,6 @@
       sectorKey: els.foundSector.value,
       seed: Number(els.foundSeed.value),
     };
-    if (state.playMode === "client") {
-      sendTo(net.hostConn, { type: "found", playerId: state.playerId, spec });
-      closeModal(els.foundModal);
-      return;
-    }
     const result = listCompany(spec);
     if (!result.ok) {
       const map = {
@@ -1609,36 +2317,25 @@
     }
     closeModal(els.foundModal);
     toast("🏛️", "상장", `${result.asset.name}(${result.asset.symbol}) · 창업 ${result.founderQty}주`);
-    if (state.playMode === "host") broadcastState();
     renderAll();
   }
 
-  function submitAd(event) {
+  async function submitAd(event) {
     event.preventDefault();
-    if (state.playMode === "client") {
-      if (state.energy < 1) {
-        els.adError.hidden = false;
-        els.adError.textContent = "에너지가 부족합니다.";
-        return;
-      }
-      if (state.cash < AD_COST) {
-        els.adError.hidden = false;
-        els.adError.textContent = "광고비 18만원이 필요합니다.";
-        return;
-      }
-      state.energy -= 1;
-      state.adDone = true;
-      sendTo(net.hostConn, {
-        type: "ad",
-        playerId: state.playerId,
-        slogan: els.adSlogan.value,
-        claim: els.adClaim.value,
-      });
-      closeModal(els.adModal);
-      renderAll();
+    if (!state.sessionOpen) {
+      els.adError.hidden = false;
+      els.adError.textContent = "수업 시간 외에는 광고를 올릴 수 없습니다.";
       return;
     }
-    const result = publishAd(state.playerId, els.adSlogan.value, els.adClaim.value);
+    let image = pendingAdImage;
+    if (els.adImage?.files?.[0]) {
+      try {
+        image = await compressAdImage(els.adImage.files[0]);
+      } catch {
+        image = "";
+      }
+    }
+    const result = publishAd(state.playerId, els.adSlogan.value, els.adClaim.value, image);
     if (!result.ok) {
       const map = {
         company: "설립한 회사가 없습니다.",
@@ -1651,29 +2348,34 @@
       return;
     }
     closeModal(els.adModal);
+    pendingAdImage = "";
     toast("📣", "광고 게재", `${result.asset.symbol} · ${els.adSlogan.value}`);
-    if (state.playMode === "host") broadcastState();
     renderAll();
   }
 
   function renderRoom() {
     if (!els.roomCodeLabel) return;
-    els.roomCodeLabel.textContent = state.roomCode || (state.playMode === "solo" ? "SOLO" : "—");
-    els.playerList.innerHTML = state.players.map((player) => {
-      const company = player.founded?.symbol || "미상장";
+    els.roomCodeLabel.textContent = "전 세계 단일 시장";
+    const people = [];
+    const seen = new Map();
+    (worldSync.seenPlayers || []).forEach((item) => {
+      if (item?.id) seen.set(item.id, item);
+    });
+    (state.players || []).forEach((player) => {
+      if (!seen.has(player.id)) seen.set(player.id, player);
+    });
+    seen.forEach((player) => people.push(player));
+    els.playerList.innerHTML = people.map((player) => {
+      const company = player.founded?.symbol || state.assets.find((asset) => asset.founderId === player.id)?.symbol || (player.bot ? "봇" : "미상장");
       const tag = player.bot ? `<span class="bot-tag">봇</span>` : (player.id === state.playerId ? `<span class="bot-tag">나</span>` : "");
-      return `<li><b>${player.name}${tag}</b><small>${company} · ${money(player.total || 0)}</small></li>`;
+      return `<li><b>${player.name || player.id}${tag}</b><small>${company}${player.lastSeen ? ` · ${player.lastSeen}` : ""}</small></li>`;
     }).join("");
-    if (els.closeMarketHint) {
-      els.closeMarketHint.textContent = state.playMode === "client"
-        ? "방장이 장을 마감하면 뉴스와 수급이 가격에 반영됩니다."
-        : "장 마감 후 이번 주 뉴스와 수급이 가격에 반영됩니다.";
-    }
-    if (els.closeMarket) {
-      els.closeMarket.disabled = !state.active || state.locked || state.playMode === "client";
-    }
-    if (els.foundButton) els.foundButton.disabled = !state.active || state.locked || !!state.founded;
-    if (els.adButton) els.adButton.disabled = !state.active || state.locked || !state.founded || state.adDone;
+    renderClock();
+    const closed = !state.active || state.locked || !state.sessionOpen;
+    if (els.closeMarket) els.closeMarket.disabled = !state.active || state.locked;
+    if (els.foundButton) els.foundButton.disabled = closed || !!state.founded;
+    if (els.adButton) els.adButton.disabled = closed || !state.founded || state.adDone;
+    renderChat();
   }
 
   function renderAds() {
@@ -1685,13 +2387,17 @@
       return;
     }
     els.adTicker.textContent = ads.map((asset) => `[${asset.symbol}] ${asset.ad.slogan}`).join("   ·   ");
-    els.adList.innerHTML = ads.map((asset) => `
+    els.adList.innerHTML = ads.map((asset) => {
+      const img = asset.ad.image ? `<img class="ad-thumb" alt="" src="${asset.ad.image}">` : "";
+      return `
       <li>
         <span class="ad-sym">${asset.symbol} · ${AD_CLAIMS[asset.ad.claim] || ""}</span>
         <b>${asset.ad.slogan}</b>
         <small>${asset.founderName || "창업자"} 집행 · 사실 여부는 미확인</small>
+        ${img}
       </li>
-    `).join("");
+    `;
+    }).join("");
   }
 
   function resetLocalWeek() {
@@ -1706,13 +2412,24 @@
     state.locked = false;
   }
 
-  function beginLocalGame(mode) {
-    state.playMode = mode === "host" ? "host" : "solo";
-    if (!state.roomCode) state.roomCode = mode === "host" ? state.roomCode : "SOLO";
-    if (mode !== "host" && mode !== "client") state.roomCode = "SOLO";
-    if (!state.players.some((item) => item.bot) && state.playMode === "solo") spawnBots(4);
+  function beginLocalGame() {
+    state.playMode = "global";
+    state.roomCode = "GLOBAL";
     syncLocalPlayer();
-    prepareWeek();
+    if (!state.event) prepareWeek();
+    else {
+      computeWeekExpectations();
+      resetLocalWeek();
+      state.ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season).map((asset) => ({
+        assetId: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        slogan: asset.ad.slogan,
+        claim: asset.ad.claim,
+        image: asset.ad.image || "",
+      }));
+      renderAll();
+    }
     revealDesk();
     els.game.scrollIntoView({ behavior: "smooth", block: "start" });
     tone(440, .08, "square");
@@ -1781,7 +2498,6 @@
     }));
     syncLocalPlayer();
     if (isAuthority()) scheduleBots();
-    if (state.playMode === "host") broadcastState({ weekStart: true });
     renderAll();
   }
 
@@ -1802,7 +2518,8 @@
     renderActivities();
     renderRoom();
     renderAds();
-    els.closeMarket.disabled = !state.active || state.locked || state.playMode === "client";
+    renderChat();
+    if (els.closeMarket) els.closeMarket.disabled = !state.active || state.locked;
   }
 
   function renderSummary() {
@@ -1851,12 +2568,13 @@
       const holding = ensureHolding(state.holdings, asset.id);
       const forecast = forecastFor(asset);
       const maxBuy = Math.floor(state.cash / asset.price);
-      const disabled = !state.active || state.locked;
+      const disabled = !state.active || state.locked || !state.sessionOpen;
       const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
       const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
       const flow = flowHint(asset);
       const founder = asset.playerCompany ? `<span class="founder-tag">${asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업")} 상장</span>` : "";
       const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${asset.ad.slogan}</span>` : "";
+      const adImg = asset.ad && asset.ad.week === state.week && asset.ad.image ? `<img class="ad-thumb" alt="" src="${asset.ad.image}">` : "";
       const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${asset.opsNote}</span>` : "";
 
       return `
@@ -1865,7 +2583,7 @@
             <span class="asset-symbol">${asset.symbol}</span>
             <strong>${asset.name}</strong>
             <small>${asset.sector}</small>
-            ${founder}${adMark}${ops}
+            ${founder}${adMark}${ops}${adImg}
             <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
           </div>
           <div class="asset-price">
@@ -2029,45 +2747,29 @@
   }
 
   function buy(id, qty) {
-    if (!state.active || state.locked) {
-      toast("⚠️", "주문 실패", "장이 열려 있는지 확인하세요.");
+    if (!state.active || state.locked || !state.sessionOpen) {
+      toast("⚠️", "주문 실패", state.sessionOpen ? "장이 열려 있는지 확인하세요." : "수업 시간 외에는 거래할 수 없습니다.");
       tone(130, .12, "sawtooth");
-      return;
-    }
-    if (state.playMode === "client") {
-      const asset = assetById(id);
-      sendTo(net.hostConn, { type: "trade", playerId: state.playerId, assetId: id, side: "buy", qty });
-      if (asset) recordTrade("buy", asset, qty, asset.price * qty);
       return;
     }
     const result = executeTrade(state.playerId, id, "buy", qty);
     if (!result.ok) {
       toast("⚠️", "주문 실패", "보유 현금과 주문 수량을 확인하세요.");
       tone(130, .12, "sawtooth");
-      return;
     }
-    if (state.playMode === "host") broadcastState();
   }
 
   function sell(id, qty) {
-    if (!state.active || state.locked) {
-      toast("⚠️", "주문 실패", "장이 열려 있는지 확인하세요.");
+    if (!state.active || state.locked || !state.sessionOpen) {
+      toast("⚠️", "주문 실패", state.sessionOpen ? "장이 열려 있는지 확인하세요." : "수업 시간 외에는 거래할 수 없습니다.");
       tone(130, .12, "sawtooth");
-      return;
-    }
-    if (state.playMode === "client") {
-      const asset = assetById(id);
-      sendTo(net.hostConn, { type: "trade", playerId: state.playerId, assetId: id, side: "sell", qty });
-      if (asset) recordTrade("sell", asset, qty, asset.price * qty);
       return;
     }
     const result = executeTrade(state.playerId, id, "sell", qty);
     if (!result.ok) {
       toast("⚠️", "주문 실패", "보유 수량을 확인하세요.");
       tone(130, .12, "sawtooth");
-      return;
     }
-    if (state.playMode === "host") broadcastState();
   }
 
   function recordTrade(type, asset, qty, total) {
@@ -2393,8 +3095,8 @@
         setTimeout(() => cell.classList.remove("picked"), 180);
         if (pick[pick.length - 1] !== seq[pick.length - 1]) {
           finishMiniGame(pick.filter((item, index) => item === seq[index]).length / seq.length);
-          return;
-        }
+      return;
+    }
         if (pick.length === seq.length) finishMiniGame(1);
         step += 1;
       });
@@ -2458,59 +3160,18 @@
     bindQuizChoice((ok) => finishMiniGame(ok ? 1 : .15));
   }
 
-  function closeMarket() {
+  async function closeMarket() {
     if (!state.active || state.locked) return;
-    if (state.playMode === "client") {
-      toast("⏳", "대기", "방장이 장을 마감합니다.");
+    if (!kstClock.ok || !kstClock.parts) {
+      toast("⏰", "표준시 없음", "한국 표준시 서버에 연결되지 않아 정산할 수 없습니다.");
       return;
     }
-    clearBotTimers();
-    botTick();
-    state.locked = true;
-    const before = totalAssets();
-    let localDividend = 0;
-
-    state.assets.forEach((asset) => {
-      if (asset.playerCompany) rollCompanyOps(asset);
-      const newsChange = state.changes[asset.id] || 0;
-      const extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
-      asset.price = Math.max(5, round1(asset.price * (1 + extra)));
-      if (asset.playerCompany) resolveAdTruth(asset);
-      const open = asset.weekOpen || asset.history[asset.history.length - 1] || asset.price;
-      asset.lastChange = open > 0 ? (asset.price - open) / open : extra;
-      asset.lastFlow = asset.weekFlow || 0;
-      asset.history.push(asset.price);
-    });
-
-    if (state.week % 4 === 0) {
-      state.players.forEach((player) => {
-        let dividend = 0;
-        state.assets.forEach((asset) => {
-          if (!(asset.dividend > 0)) return;
-          const qty = (player.id === state.playerId ? state.holdings : player.holdings)?.[asset.id]?.qty || 0;
-          dividend += asset.price * qty * asset.dividend;
-        });
-        if (dividend > 0) {
-          if (player.id === state.playerId) {
-            state.cash += dividend;
-            localDividend += dividend;
-          } else {
-            player.cash += dividend;
-          }
-        }
-      });
-      if (localDividend > 0) toast("💰", "분기 배당 입금", `${money(localDividend)}이 현금 계좌에 들어왔습니다.`);
+    const key = lastEndedPeriodId(kstClock.parts);
+    if (worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId >= key) {
+      toast("⏳", "이미 정산됨", "이번 교시 정산은 이미 반영됐습니다. 다음 수업 종료를 기다리세요.");
+      return;
     }
-
-    const after = totalAssets();
-    const cashRatio = after > 0 ? state.cash / after : 0;
-    if (cashRatio >= .3) state.cashSafeWeeks += 1;
-    checkMissions();
-    checkBadges();
-    syncLocalPlayer();
-    showWeekResult(after - before, after, localDividend);
-    if (state.playMode === "host") broadcastState({ weekClosed: true, dividend: localDividend });
-    renderAll();
+    await settlePeriod(key, { manual: true });
   }
 
   function showWeekResult(weekProfit, total, dividend) {
@@ -2555,13 +3216,9 @@
 
   function nextWeek() {
     closeModal(els.weekModal);
-    if (state.playMode === "client") return;
-    if (state.seasonBreak) {
-      startNextSeason();
-      return;
-    }
-    state.week += 1;
-    prepareWeek();
+    state.locked = false;
+    state.seasonBreak = false;
+    renderAll();
     els.game.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -2621,8 +3278,9 @@
     if (!requireSession()) return;
     closeModal(els.setupModal);
     closeModal(els.endModal);
-    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 솔로 또는 멀티플레이를 고르세요.`;
+    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 전 세계 단일 시장에 입장합니다.`;
     if (els.lobbyStatus) els.lobbyStatus.textContent = "";
+    refreshKst().then(() => renderClock());
     openModal(els.lobbyModal);
   }
 
@@ -2762,30 +3420,10 @@
   els.authForm.addEventListener("submit", (event) => {
     submitAuth(event).catch(() => showAuthError("인증에 실패했습니다."));
   });
-  els.lobbySolo.addEventListener("click", () => {
+  els.lobbyEnter.addEventListener("click", () => {
     if (!requireSession()) return;
     bootRun();
-    closeModal(els.lobbyModal);
-    beginLocalGame("solo");
-  });
-  els.lobbyHost.addEventListener("click", () => {
-    if (!requireSession()) return;
-    bootRun();
-    startHostRoom();
-  });
-  els.lobbyJoin.addEventListener("click", () => {
-    if (!requireSession()) return;
-    bootRun();
-    joinHostRoom(els.joinCode.value);
-  });
-  els.copyRoom.addEventListener("click", async () => {
-    const code = state.roomCode || "";
-    try {
-      await navigator.clipboard.writeText(code);
-      toast("📋", "복사됨", `방 코드 ${code}`);
-    } catch {
-      toast("📋", "방 코드", code || "SOLO");
-    }
+    enterGlobalMarket();
   });
   els.foundButton.addEventListener("click", openFoundModal);
   els.adButton.addEventListener("click", openAdModal);
@@ -2794,6 +3432,50 @@
   els.foundSymbol.addEventListener("input", () => {
     els.foundSymbol.value = els.foundSymbol.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
   });
+  if (els.adImage) {
+    els.adImage.addEventListener("change", () => {
+      const file = els.adImage.files?.[0];
+      if (!file) {
+        pendingAdImage = "";
+        return;
+      }
+      compressAdImage(file).then((data) => {
+        pendingAdImage = data;
+      }).catch(() => {
+        pendingAdImage = "";
+        toast("🖼️", "이미지 실패", "다른 사진을 골라 보세요. 글만으로도 광고할 수 있습니다.");
+      });
+    });
+  }
+  if (els.chatCreateForm) {
+    els.chatCreateForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!state?.active) return;
+      if (!createChatRoom(els.chatRoomName.value)) {
+        toast("💬", "방 이름", "방 이름은 2자 이상으로 적어 주세요.");
+        return;
+      }
+      els.chatRoomName.value = "";
+      toast("💬", "채팅방", "새 방이 열렸습니다. 같은 시장의 누구나 볼 수 있습니다.");
+    });
+  }
+  if (els.chatRoomSelect) {
+    els.chatRoomSelect.addEventListener("change", () => {
+      activeChatRoomId = els.chatRoomSelect.value;
+      renderChat();
+    });
+  }
+  if (els.chatForm) {
+    els.chatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!state?.active) return;
+      if (!activeChatRoomId) {
+        toast("💬", "방 없음", "먼저 채팅방을 만들거나 고르세요.");
+        return;
+      }
+      if (sendChat(els.chatInput.value)) els.chatInput.value = "";
+    });
+  }
 
   document.querySelectorAll(".activity-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -2851,6 +3533,8 @@
   renderAccount();
   fillFoundSectors();
   state = createState("rookie", false);
+  hideDesk();
   prepareWeek();
   renderBest();
+  refreshKst().then(() => renderClock());
 })();
