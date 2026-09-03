@@ -1032,8 +1032,8 @@
     });
     const extras = state.assets.filter((asset) => !CORE_ASSET_IDS.includes(asset.id));
     state.assets = [...cores, ...extras];
-    if (!selectedChartId || !state.assets.some((asset) => asset.id === selectedChartId)) {
-      selectedChartId = state.assets[0]?.id || "";
+    if (!selectedChartId || !state.assets.some((asset) => asset.id === selectedChartId && asset.playerCompany)) {
+      selectedChartId = state.assets.find((asset) => asset.playerCompany)?.id || "";
     }
   }
 
@@ -1608,7 +1608,7 @@
 
   function sampleLiveTicks() {
     if (!state?.active) return;
-    state.assets.forEach((asset) => pushTick(asset));
+    liveCompanies().forEach((asset) => pushTick(asset));
   }
 
   function sparkPath(values, w, h, pad = 3) {
@@ -2906,6 +2906,7 @@
     }
     closeModal(els.foundModal);
     toast("🏛️", "상장", `${result.asset.name}(${result.asset.symbol}) · 창업 ${result.founderQty}주`);
+    selectChart(result.asset.id);
     renderAll();
   }
 
@@ -3169,6 +3170,18 @@
     return Array.from({ length: 5 }, (_, index) => `<i class="${index < asset.risk ? "on" : ""}"></i>`).join("");
   }
 
+  function liveCompanies() {
+    return (state?.assets || []).filter((asset) => asset.playerCompany);
+  }
+
+  function ensureLiveChartSelection() {
+    const list = liveCompanies();
+    if (!list.some((asset) => asset.id === selectedChartId)) {
+      selectedChartId = list[0]?.id || "";
+    }
+    return list;
+  }
+
   function sparkSvg(asset, w, h) {
     const values = ensureTicks(asset);
     const tone = tickToneClass(values);
@@ -3176,7 +3189,8 @@
   }
 
   function selectChart(id) {
-    if (!id || !state?.assets?.some((asset) => asset.id === id)) return;
+    const asset = state?.assets?.find((item) => item.id === id);
+    if (!asset?.playerCompany) return;
     selectedChartId = id;
     if (els.liveChartPills) {
       els.liveChartPills.querySelectorAll("[data-chart-id]").forEach((pill) => {
@@ -3186,11 +3200,23 @@
     updateLiveCharts();
   }
 
+  function renderLiveEmpty() {
+    if (els.liveChartPills) els.liveChartPills.innerHTML = "";
+    if (els.liveChartTitle) els.liveChartTitle.textContent = "학교 기업 시세";
+    if (els.liveChartMeta) els.liveChartMeta.textContent = "새로 만든 학교 회사만 보입니다. 아직 상장된 회사가 없습니다.";
+    if (els.liveChartPrice) els.liveChartPrice.textContent = "";
+    if (els.liveChartLine) els.liveChartLine.setAttribute("d", "");
+    if (els.liveChartArea) els.liveChartArea.setAttribute("d", "");
+  }
+
   function renderLiveBoard() {
     if (!els.liveChartPills || !state?.assets) return;
-    ensureCoreListings();
-    if (!selectedChartId) selectedChartId = state.assets[0]?.id || "";
-    els.liveChartPills.innerHTML = state.assets.map((asset) => `
+    const list = ensureLiveChartSelection();
+    if (!list.length) {
+      renderLiveEmpty();
+      return;
+    }
+    els.liveChartPills.innerHTML = list.map((asset) => `
       <button type="button" data-chart-id="${asset.id}" class="${asset.id === selectedChartId ? "active" : ""}" style="--asset-color:${asset.color}">
         <b>${asset.symbol}</b>
         <span>${asset.name}</span>
@@ -3200,7 +3226,7 @@
 
   function updateLiveCharts() {
     if (!state?.assets) return;
-    state.assets.forEach((asset) => {
+    liveCompanies().forEach((asset) => {
       const row = els.assetList?.querySelector(`[data-id="${asset.id}"]`);
       if (!row) return;
       const values = ensureTicks(asset);
@@ -3212,8 +3238,12 @@
       const last = row.querySelector(".asset-last");
       if (last) last.textContent = money(asset.price);
     });
-    const asset = state.assets.find((item) => item.id === selectedChartId) || state.assets[0];
-    if (!asset) return;
+    const list = ensureLiveChartSelection();
+    const asset = list.find((item) => item.id === selectedChartId) || list[0];
+    if (!asset) {
+      renderLiveEmpty();
+      return;
+    }
     const values = ensureTicks(asset);
     const tone = tickToneClass(values);
     if (els.liveChartLine) els.liveChartLine.setAttribute("d", sparkPath(values, LIVE_W, LIVE_H));
@@ -3228,9 +3258,7 @@
       const first = values[0] || asset.price;
       const last = values[values.length - 1] || asset.price;
       const change = first ? (last - first) / first : 0;
-      els.liveChartMeta.textContent = asset.playerCompany
-        ? `학생 회사 · 최근 ${percent(change)}`
-        : `기본 종목 · 최근 ${percent(change)}`;
+      els.liveChartMeta.textContent = `학교 기업 · 최근 ${percent(change)}`;
     }
     if (els.liveChartPrice) {
       els.liveChartPrice.textContent = money(asset.price);
