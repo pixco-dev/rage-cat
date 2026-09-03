@@ -7,8 +7,10 @@
   const WALLET_STORE = "bull-lab-wallets-v1";
   const AD_COST = 18;
   const MIN_SEED = 80;
-  const WORLD_BLOB_ID = "b011ab00-7a6e-41ab-8c00-00b011ab0001";
+  // JSONBlob PUT-create only accepts IDs it can parse: ObjectId, snowflake, or UUID v1.
+  const WORLD_BLOB_ID = "b011ab00-7a6e-11ab-8c00-00b011ab0001";
   const WORLD_URL = `https://jsonblob.com/api/jsonBlob/${WORLD_BLOB_ID}`;
+  const WORLD_HEADERS = { "Content-Type": "application/json", Accept: "application/json" };
   const POLL_MS = 2500;
   const KST_POLL_MS = 45000;
   const CHAT_CAP = 50;
@@ -691,6 +693,8 @@
     eventDeck: [],
     eventKey: 0,
     botsSpawned: false,
+    online: false,
+    lastToastAt: 0,
   };
   const kstClock = {
     ok: false,
@@ -808,29 +812,6 @@
       localStorage.setItem(LOCAL_WORLD_KEY, JSON.stringify(payload));
     } catch {
       /* quota */
-    }
-  }
-
-  async function fetchWorldRaw() {
-    try {
-      const res = await fetch(WORLD_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
-      if (!res.ok) return readLocalWorld();
-      return await res.json();
-    } catch {
-      return readLocalWorld();
-    }
-  }
-
-  async function putWorldRaw(payload) {
-    writeLocalWorld(payload);
-    try {
-      await fetch(WORLD_URL, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
-      });
-    } catch {
-      /* local copy is enough if remote is down */
     }
   }
 
@@ -2105,25 +2086,47 @@
     return { settled, weekChanged };
   }
 
+  function slimWorldPayload(payload) {
+    const stripAd = (ad) => (ad ? { ...ad, image: "" } : ad);
+    return {
+      ...payload,
+      ads: (payload.ads || []).map((ad) => ({ ...ad, image: "" })),
+      assets: (payload.assets || []).map((asset) => ({ ...asset, ad: stripAd(asset.ad) })),
+    };
+  }
+
   async function fetchWorld() {
     const res = await fetch(WORLD_URL, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error("world-get");
-    return res.json();
+    const data = await res.json();
+    writeLocalWorld(data);
+    return data;
   }
 
   async function putWorld(payload) {
-    const body = JSON.stringify(payload);
-    const headers = { "Content-Type": "application/json", Accept: "application/json" };
-    let res = await fetch(WORLD_URL, { method: "PUT", headers, body });
-    if (res.status === 404) {
-      res = await fetch(WORLD_URL, { method: "PUT", headers, body });
+    writeLocalWorld(payload);
+    let body = JSON.stringify(payload);
+    let res = await fetch(WORLD_URL, { method: "PUT", headers: WORLD_HEADERS, body });
+    if (res.status === 413) {
+      body = JSON.stringify(slimWorldPayload(payload));
+      res = await fetch(WORLD_URL, { method: "PUT", headers: WORLD_HEADERS, body });
     }
     if (!res.ok && res.status !== 201) throw new Error("world-put");
     worldSync.revision = payload.revision;
     worldSync.updatedAt = payload.updatedAt;
     worldSync.touched.clear();
+    worldSync.online = true;
     return true;
+  }
+
+  function noteWorldError() {
+    worldSync.online = false;
+    renderSyncStatus();
+    const now = Date.now();
+    if (now - worldSync.lastToastAt < 25000) return;
+    worldSync.lastToastAt = now;
+    toast("📡", "동기화 지연", "공유 시장에 잠시 닿지 못했습니다. 곧 다시 시도합니다.");
   }
 
   async function pushWorld() {
@@ -2135,8 +2138,9 @@
       if (remote) mergeWorld(remote, { preferLocal: true });
       const payload = buildWorldPayload();
       await putWorld(payload);
+      renderSyncStatus();
     } catch {
-      toast("📡", "동기화 지연", "공유 시장에 잠시 닿지 못했습니다. 곧 다시 시도합니다.");
+      noteWorldError();
     } finally {
       worldSync.putting = false;
       if (worldSync.dirty) {
@@ -2168,6 +2172,8 @@
         queuePush();
         return;
       }
+      worldSync.online = true;
+      renderSyncStatus();
       if ((remote.revision || 0) < worldSync.revision) return;
       const before = totalAssets();
       const result = mergeWorld(remote, { preferLocal: false });
@@ -2288,16 +2294,20 @@
     if (due) await settlePeriod(due);
   }
 
+  function renderSyncStatus() {
+    if (!els.playerCount) return;
+    const n = worldSync.seenPlayers?.length || state?.players?.filter((item) => !item.bot).length || 0;
+    const sync = worldSync.online ? "공유됨" : "연결 중";
+    els.playerCount.textContent = n ? `접속 ${n}명 · ${sync}` : sync;
+  }
+
   function renderClock() {
     const info = clockLabel();
     if (state) state.sessionOpen = true;
     if (els.periodClock) els.periodClock.textContent = info.line;
     if (els.closeMarketHint) els.closeMarketHint.textContent = info.hint;
     if (els.lobbyClock) els.lobbyClock.textContent = info.line;
-    if (els.playerCount) {
-      const n = worldSync.seenPlayers?.length || state?.players?.filter((item) => !item.bot).length || 0;
-      els.playerCount.textContent = n ? `접속 ${n}명` : "";
-    }
+    renderSyncStatus();
   }
 
   async function tickClock() {
@@ -2330,7 +2340,10 @@
     let remote = null;
     try {
       remote = await fetchWorld();
-      if (remote) mergeWorld(remote, { preferLocal: false });
+      if (remote) {
+        worldSync.online = true;
+        mergeWorld(remote, { preferLocal: false });
+      }
     } catch {
       remote = null;
     }
