@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260903ab">
+  <link rel="stylesheet" href="style.css?v=20260903ac">
 </head>
 <body>
   <header class="site-header">
@@ -81,7 +81,7 @@
           <h2 id="game-title"><b id="week-label">시즌 1 · 1주차</b> 투자 전략</h2>
         </div>
         <div class="game-head-actions">
-          <span id="difficulty-label">연습생 모드</span>
+          <span id="difficulty-label" hidden>연습생 모드</span>
           <button id="restart-button" type="button">투자 다시 시작</button>
         </div>
       </div>
@@ -345,20 +345,12 @@
     <section class="setup-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title">
       <button class="modal-x" data-close="setup" type="button" aria-label="닫기">×</button>
       <span class="overline">START INVESTING</span>
-      <h2 id="setup-title">어떻게 투자할까요?</h2>
-      <p>계좌는 회원가입 때 이미 만들어져 있습니다. 아래에서 고르는 성향은 이번 투자의 에너지에만 영향을 주고, 모아 둔 돈은 그대로입니다.</p>
-      <div class="difficulty-list">
+      <h2 id="setup-title">투자를 시작할까요?</h2>
+      <p>계좌는 회원가입 때 이미 만들어져 있습니다. 시드와 목표는 모두 같습니다.</p>
+      <div class="difficulty-list" hidden>
         <button class="difficulty active" type="button" data-mode="rookie">
           <span class="difficulty-icon">🌱</span><b>연습생</b><small>처음이라면 추천</small>
           <dl><div><dt>신규 시드</dt><dd>800만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>4</dd></div></dl>
-        </button>
-        <button class="difficulty" type="button" data-mode="trader">
-          <span class="difficulty-icon">📈</span><b>트레이더</b><small>균형 잡힌 도전</small>
-          <dl><div><dt>신규 시드</dt><dd>650만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
-        </button>
-        <button class="difficulty" type="button" data-mode="wolf">
-          <span class="difficulty-icon">🐺</span><b>여의도 늑대</b><small>실수는 곧 퇴장</small>
-          <dl><div><dt>신규 시드</dt><dd>450만원</dd></div><div><dt>목표</dt><dd>2,000만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
         </button>
       </div>
       <button class="cta-button setup-start" id="start-game" type="button">투자 시작 <span>→</span></button>
@@ -466,6 +458,6 @@
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="game.js?v=20260903ab"></script>
+  <script src="game.js?v=20260903ac"></script>
 </body>
 </html>

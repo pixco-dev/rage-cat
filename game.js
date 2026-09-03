@@ -36,8 +36,6 @@
 
   const MODES = {
     rookie: { name: "연습생 모드", cash: 800, goal: 1800, research: 2, energy: 4 },
-    trader: { name: "트레이더 모드", cash: 650, goal: 1800, research: 2, energy: 3 },
-    wolf: { name: "여의도 늑대", cash: 450, goal: 2000, research: 1, energy: 3 },
   };
 
   const ASSET_BLUEPRINTS = [
@@ -1036,7 +1034,7 @@
   }
 
   function createState(modeKey = "rookie", active = false) {
-    const config = MODES[modeKey];
+    const config = MODES[modeKey] || MODES.rookie;
     const assets = freshAssets();
     return {
       active,
@@ -1327,7 +1325,7 @@
     toast("🪪", authMode === "register" ? "계좌 개설" : "로그인", authMode === "register"
       ? `${session.nick} 님, 투자 계좌가 만들어졌습니다.`
       : `${session.nick} 님, 다시 오신 것을 환영합니다.`);
-    if (authNext === "setup") openModal(els.setupModal);
+    if (authNext === "setup") startGame();
     authNext = "setup";
   }
 
@@ -4126,7 +4124,7 @@
       return;
     }
     if (!requireSession()) return;
-    openModal(els.setupModal);
+    startGame();
   }
 
   function startGame() {
@@ -4216,12 +4214,12 @@
   els.openSetup?.addEventListener("click", openSetupFlow);
   els.restart?.addEventListener("click", () => {
     if (!requireSession()) return;
-    openModal(els.setupModal);
+    startGame();
   });
   els.playAgain?.addEventListener("click", () => {
     closeModal(els.endModal);
     if (!requireSession()) return;
-    openModal(els.setupModal);
+    startGame();
   });
   if (els.continueSeason) {
     els.continueSeason.addEventListener("click", () => {
