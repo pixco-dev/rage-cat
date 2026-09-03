@@ -714,6 +714,7 @@
     online: false,
     lastToastAt: 0,
     worldUrl: "",
+    entering: false,
   };
   const kstClock = {
     ok: false,
@@ -2562,34 +2563,58 @@
   }
 
   async function enterGlobalMarket() {
-    if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중…";
-    useDeviceKst();
-    const local = readLocalWorld();
-    if (local) mergeWorld(local, { preferLocal: false });
-    restoreAccountWealth(local);
-    purgeBots();
-    ensureCoreListings();
-    if (kstClock.ok && kstClock.parts) {
-      if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
-    }
-    if (worldSync.eventDeck?.length) {
-      state.eventDeck = worldSync.eventDeck.map((i) => EVENTS[i] || EVENTS[0]);
-      state.event = hydrateEvent(worldSync.eventDeck[state.week - 1], state.event);
-    }
-    closeModal(els.lobbyModal);
-    beginLocalGame();
-    startWorldLoop();
-    queuePush();
-    toast("🌐", "투자 시작", "같은 시장입니다. 기본 종목은 지금 바로 사고팔 수 있습니다.");
-    refreshKst().catch(() => useDeviceKst());
-    fetchWorld().then((fetched) => {
-      if (!fetched || !state?.active) return;
-      worldSync.online = true;
-      mergeWorld(fetched, { preferLocal: false });
-      restoreAccountWealth(fetched);
+    if (worldSync.entering) return;
+    worldSync.entering = true;
+    try {
+      if (state?.active) {
+        closeModal(els.lobbyModal);
+        closeModal(els.setupModal);
+        revealDesk();
+        return;
+      }
+      if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중…";
+      useDeviceKst();
+      if (!state) bootRun();
+      const local = readLocalWorld();
+      if (local) {
+        try { mergeWorld(local, { preferLocal: false }); } catch { /* ignore bad cache */ }
+      }
+      try { restoreAccountWealth(local); } catch { /* keep seeded wallet */ }
+      purgeBots();
       ensureCoreListings();
-      renderAll();
-    }).catch(() => {});
+      if (kstClock.ok && kstClock.parts) {
+        if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
+      }
+      if (worldSync.eventDeck?.length) {
+        state.eventDeck = worldSync.eventDeck.map((i) => EVENTS[i] || EVENTS[0]);
+        state.event = hydrateEvent(worldSync.eventDeck[state.week - 1], state.event);
+      }
+      closeModal(els.lobbyModal);
+      closeModal(els.setupModal);
+      beginLocalGame();
+      startWorldLoop();
+      queuePush();
+      refreshKst().catch(() => useDeviceKst());
+      fetchWorld().then((fetched) => {
+        if (!fetched || !state?.active) return;
+        worldSync.online = true;
+        mergeWorld(fetched, { preferLocal: false });
+        restoreAccountWealth(fetched);
+        ensureCoreListings();
+        renderAll();
+      }).catch(() => {});
+    } catch (err) {
+      console.error(err);
+      closeModal(els.lobbyModal);
+      closeModal(els.setupModal);
+      if (state) {
+        state.active = true;
+        state.locked = false;
+      }
+      try { beginLocalGame(); } catch { revealDesk(); }
+    } finally {
+      setTimeout(() => { worldSync.entering = false; }, 500);
+    }
   }
 
   function compressAdImage(file) {
@@ -2958,9 +2983,9 @@
       }
       const eventEffect = state.event.effects?.[asset.sectorKey || asset.id] || state.event.effects?.[asset.id] || 0;
       const newsWeight = asset.playerCompany ? 0.28 : 1;
-      const momentum = asset.lastChange * .08;
-      const expected = eventEffect * newsWeight + asset.trend + momentum;
-      const noise = (random() * 2 - 1) * asset.noise * (asset.playerCompany ? 0.45 : 1);
+      const momentum = (asset.lastChange || 0) * .08;
+      const expected = eventEffect * newsWeight + (asset.trend || 0) + momentum;
+      const noise = (random() * 2 - 1) * (asset.noise || 0.01) * (asset.playerCompany ? 0.45 : 1);
       state.expected[asset.id] = expected;
       state.changes[asset.id] = Math.max(-.28, Math.min(.28, expected + noise));
     });
@@ -3999,16 +4024,9 @@
     closeModal(els.authModal);
     closeModal(els.setupModal);
     closeModal(els.endModal);
-    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 시장에 들어가는 중…`;
-    if (els.lobbyStatus) els.lobbyStatus.textContent = "잠시만요.";
-    openModal(els.lobbyModal);
-    bootRun();
-    return enterGlobalMarket().catch((err) => {
-      console.error(err);
-      closeModal(els.lobbyModal);
-      revealDesk();
-      toast("⚠️", "공유 시장 지연", "일단 로컬에서 거래를 시작합니다.");
-    });
+    closeModal(els.lobbyModal);
+    if (!state || !state.active) bootRun();
+    return enterGlobalMarket();
   }
 
   function startGame() {
@@ -4035,6 +4053,7 @@
   }
 
   function toast(icon, title, copy) {
+    if (!els.toastStack) return;
     const item = document.createElement("div");
     item.className = "toast";
     item.innerHTML = `<i>${icon}</i><b>${title}</b><p>${copy}</p>`;
@@ -4152,12 +4171,9 @@
     submitAuth(event).catch(() => showAuthError("인증에 실패했습니다."));
   });
   els.lobbyEnter?.addEventListener("click", () => {
-    if (!requireSession()) return;
-    bootRun();
-    enterGlobalMarket().catch((err) => {
-      console.error(err);
-      toast("⚠️", "입장 실패", "한 번 더 눌러 주세요.");
-    });
+    ensureGuestSession();
+    if (!state || !state.active) bootRun();
+    enterGlobalMarket();
   });
   els.foundButton?.addEventListener("click", openFoundModal);
   els.adButton?.addEventListener("click", openAdModal);
