@@ -9,8 +9,10 @@
   const MIN_SEED = 80;
   // JSONBlob PUT-create only accepts IDs it can parse: ObjectId, snowflake, or UUID v1.
   const WORLD_BLOB_ID = "b011ab00-7a6e-11ab-8c00-00b011ab0001";
-  const WORLD_URL = `https://jsonblob.com/api/jsonBlob/${WORLD_BLOB_ID}`;
+  const WORLD_CREATE_URL = "https://jsonblob.com/api/jsonBlob";
+  const WORLD_URL_STORE = "bull-lab-world-url-v1";
   const WORLD_HEADERS = { "Content-Type": "application/json", Accept: "application/json" };
+  const FETCH_MS = 6000;
   const POLL_MS = 2500;
   const KST_POLL_MS = 45000;
   const CHAT_CAP = 50;
@@ -711,6 +713,7 @@
     botsSpawned: false,
     online: false,
     lastToastAt: 0,
+    worldUrl: "",
   };
   const kstClock = {
     ok: false,
@@ -829,6 +832,45 @@
     } catch {
       /* quota */
     }
+  }
+
+  function defaultWorldUrl() {
+    return `https://jsonblob.com/api/jsonBlob/${WORLD_BLOB_ID}`;
+  }
+
+  function activeWorldUrl() {
+    if (worldSync.worldUrl) return worldSync.worldUrl;
+    try {
+      const saved = localStorage.getItem(WORLD_URL_STORE);
+      if (saved) worldSync.worldUrl = saved;
+    } catch {
+      /* ignore */
+    }
+    return worldSync.worldUrl || defaultWorldUrl();
+  }
+
+  function rememberWorldUrl(url) {
+    if (!url) return;
+    worldSync.worldUrl = url;
+    try { localStorage.setItem(WORLD_URL_STORE, url); } catch { /* ignore */ }
+  }
+
+  async function fetchWithTimeout(url, options = {}, ms = FETCH_MS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { ...options, cache: options.cache || "no-store", signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function useDeviceKst() {
+    kstClock.ok = true;
+    kstClock.offsetMs = 0;
+    kstClock.fetchedAt = Date.now();
+    kstClock.source = "device";
+    kstClock.parts = parseKstParts(Date.now());
   }
 
   function stripBotsFromWorld(payload) {
@@ -1865,7 +1907,7 @@
     ];
     for (const src of sources) {
       try {
-        const res = await fetch(src.url, { cache: "no-store" });
+        const res = await fetchWithTimeout(src.url, { cache: "no-store" }, 4000);
         if (!res.ok) continue;
         const data = await res.json();
         const serverMs = src.parse(data);
@@ -1880,9 +1922,8 @@
         // try next public KST endpoint
       }
     }
-    kstClock.ok = false;
-    kstClock.parts = null;
-    return false;
+    useDeviceKst();
+    return true;
   }
 
   function isWeekend(parts) {
@@ -2005,7 +2046,7 @@
     const when = weekdayKo(next.ymd);
     return {
       line: `${kst} · 다음 주가 공개 ${when} ${slot}까지 ${count}`,
-      hint: "09:20 등 교시 종료 시각에 뉴스·수급이 가격으로 공개됩니다. 그 외 시간에도 사고팔 수 있습니다.",
+      hint: "기본 6종목은 시간과 관계없이 사고팔 수 있습니다. 교시가 끝나면 주가만 공개됩니다.",
       open: true,
     };
   }
@@ -2246,21 +2287,47 @@
   }
 
   async function fetchWorld() {
-    const res = await fetch(WORLD_URL, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
+    const url = activeWorldUrl();
+    const res = await fetchWithTimeout(url, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error("world-get");
     const data = await res.json();
     writeLocalWorld(data);
+    rememberWorldUrl(url);
     return data;
+  }
+
+  function blobUrlFromResponse(res) {
+    const headerId = res.headers.get("X-jsonblob") || res.headers.get("X-jsonblob-id");
+    const loc = res.headers.get("Location") || "";
+    const id = headerId || loc.split("/").filter(Boolean).pop();
+    return id ? `https://jsonblob.com/api/jsonBlob/${id}` : "";
   }
 
   async function putWorld(payload) {
     writeLocalWorld(payload);
     let body = JSON.stringify(payload);
-    let res = await fetch(WORLD_URL, { method: "PUT", headers: WORLD_HEADERS, body });
+    if (body.length > 90000) body = JSON.stringify(slimWorldPayload(payload));
+    const headers = WORLD_HEADERS;
+    let url = activeWorldUrl();
+    let res = await fetchWithTimeout(url, { method: "PUT", headers, body });
+    if (res.status === 404 || res.status === 405) {
+      res = await fetchWithTimeout(WORLD_CREATE_URL, { method: "POST", headers, body });
+      const created = blobUrlFromResponse(res);
+      if (created) {
+        rememberWorldUrl(created);
+        url = created;
+        const seeded = await fetchWithTimeout(defaultWorldUrl(), { method: "PUT", headers, body });
+        if (seeded.ok || seeded.status === 201) {
+          rememberWorldUrl(defaultWorldUrl());
+          url = defaultWorldUrl();
+          res = seeded;
+        }
+      }
+    }
     if (res.status === 413) {
       body = JSON.stringify(slimWorldPayload(payload));
-      res = await fetch(WORLD_URL, { method: "PUT", headers: WORLD_HEADERS, body });
+      res = await fetchWithTimeout(url, { method: "PUT", headers, body });
     }
     if (!res.ok && res.status !== 201) throw new Error("world-put");
     worldSync.revision = payload.revision;
@@ -2406,7 +2473,7 @@
       const remote = await fetchWorld();
       if (remote) mergeWorld(remote, { preferLocal: false });
     } catch {
-      if (!options.manual) return false;
+      /* settle locally if the shared store is slow */
     }
     if (!options.manual && worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId >= periodKey) return false;
     const before = totalAssets();
@@ -2427,7 +2494,11 @@
     if (after > 0 && state.cash / after >= .3) state.cashSafeWeeks += 1;
     checkMissions();
     checkBadges();
-    showWeekResult(after - before, after, localDividend);
+    if (options.manual) {
+      showWeekResult(after - before, after, localDividend);
+    } else {
+      toast("📈", "주가 공개", "변동이 반영됐습니다. 기본 종목은 지금 바로 사고팔 수 있습니다.");
+    }
     worldSync.lastSettledPeriodId = periodKey;
     advanceSharedWeek();
     state.locked = false;
@@ -2492,22 +2563,10 @@
 
   async function enterGlobalMarket() {
     if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중…";
-    await refreshKst();
-    if (!kstClock.ok) {
-      if (els.lobbyStatus) els.lobbyStatus.textContent = "표준시 없이 입장합니다. 거래는 가능하고, 주가 공개는 표준시에 연결되면 따라갑니다.";
-      toast("⏰", "표준시 대기", "지금은 바로 투자할 수 있습니다. 09:20 등 주가 공개만 표준시가 필요합니다.");
-    }
-    let remote = null;
-    try {
-      remote = await fetchWorld();
-      if (remote) {
-        worldSync.online = true;
-        mergeWorld(remote, { preferLocal: false });
-      }
-    } catch {
-      remote = null;
-    }
-    restoreAccountWealth(remote);
+    useDeviceKst();
+    const local = readLocalWorld();
+    if (local) mergeWorld(local, { preferLocal: false });
+    restoreAccountWealth(local);
     purgeBots();
     ensureCoreListings();
     if (kstClock.ok && kstClock.parts) {
@@ -2521,7 +2580,16 @@
     beginLocalGame();
     startWorldLoop();
     queuePush();
-    toast("🌐", "투자 시작", "같은 시장입니다. 교시가 끝나면 주가 변동이 공개되고, 그 사이에는 계속 거래할 수 있습니다.");
+    toast("🌐", "투자 시작", "같은 시장입니다. 기본 종목은 지금 바로 사고팔 수 있습니다.");
+    refreshKst().catch(() => useDeviceKst());
+    fetchWorld().then((fetched) => {
+      if (!fetched || !state?.active) return;
+      worldSync.online = true;
+      mergeWorld(fetched, { preferLocal: false });
+      restoreAccountWealth(fetched);
+      ensureCoreListings();
+      renderAll();
+    }).catch(() => {});
   }
 
   function compressAdImage(file) {
@@ -3229,8 +3297,8 @@
   }
 
   function buy(id, qty) {
-    if (!state.active || state.locked) {
-      toast("⚠️", "주문 실패", "주가 공개 안내를 닫은 뒤 다시 주문하세요.");
+    if (!state.active) {
+      toast("⚠️", "주문 실패", "시장에 들어간 뒤 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
@@ -3242,8 +3310,8 @@
   }
 
   function sell(id, qty) {
-    if (!state.active || state.locked) {
-      toast("⚠️", "주문 실패", "주가 공개 안내를 닫은 뒤 다시 주문하세요.");
+    if (!state.active) {
+      toast("⚠️", "주문 실패", "시장에 들어간 뒤 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
