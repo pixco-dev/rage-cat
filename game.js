@@ -2938,7 +2938,10 @@
   }
 
   function openFoundModal() {
-    if (!state.active) return;
+    if (!state?.active) {
+      toast("📈", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
     if (state.founded) {
       toast("🏢", "이미 설립함", "회사는 계정당 한 곳만 상장할 수 있습니다.");
       return;
@@ -2952,7 +2955,10 @@
   }
 
   function openAdModal() {
-    if (!state.active) return;
+    if (!state?.active) {
+      toast("📈", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
     if (!state.founded) {
       toast("📢", "회사 없음", "먼저 회사를 설립해야 광고를 집행할 수 있습니다.");
       return;
@@ -3058,8 +3064,18 @@
     renderClock();
     const closed = !state.active;
     if (els.closeMarket) els.closeMarket.disabled = !state.active;
-    if (els.foundButton) els.foundButton.disabled = closed || !!state.founded;
-    if (els.adButton) els.adButton.disabled = closed || !state.founded || state.adDone;
+    if (els.foundButton) {
+      const off = closed || !!state.founded;
+      els.foundButton.disabled = false;
+      els.foundButton.classList.toggle("is-off", off);
+      els.foundButton.setAttribute("aria-disabled", off ? "true" : "false");
+    }
+    if (els.adButton) {
+      const off = closed || !state.founded || state.adDone;
+      els.adButton.disabled = false;
+      els.adButton.classList.toggle("is-off", off);
+      els.adButton.setAttribute("aria-disabled", off ? "true" : "false");
+    }
     renderChat();
   }
 

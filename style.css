@@ -22,6 +22,19 @@
 
 html {
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+label {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(14, 25, 21, .12);
 }
 
 body {
@@ -233,11 +246,13 @@ body.in-play .game {
   transition: .16s ease;
 }
 
-.cta-button:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--lime);
-  box-shadow: 2px 2px 0 var(--red);
-  transform: translate(3px, 3px);
+@media (hover: hover) and (pointer: fine) {
+  .cta-button:hover:not(:disabled) {
+    color: var(--ink);
+    background: var(--lime);
+    box-shadow: 2px 2px 0 var(--red);
+    transform: translate(3px, 3px);
+  }
 }
 
 .cta-button:disabled {
@@ -2159,6 +2174,19 @@ body.modal-open {
     align-items: flex-end;
   }
 
+  .room-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .room-actions button {
+    min-height: 48px;
+    width: 100%;
+    font-size: 15px;
+  }
+
   .metrics {
     grid-template-columns: 1fr 1fr;
   }
@@ -2413,12 +2441,19 @@ body.modal-open {
 .room-code-wrap button,
 .room-actions button {
   cursor: pointer;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 44px;
+  padding: 0 14px;
   color: var(--ink);
   background: var(--lime);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 700;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.room-actions button.is-off,
+.room-actions button:disabled {
+  opacity: .45;
 }
 
 .room-code-wrap button {
@@ -2638,11 +2673,11 @@ body.modal-open {
 .auth-form input,
 .found-form input,
 .found-form select {
-  min-height: 42px;
-  padding: 8px 10px;
+  min-height: 48px;
+  padding: 10px 12px;
   border: 1px solid var(--ink);
   background: var(--white);
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .form-error,
