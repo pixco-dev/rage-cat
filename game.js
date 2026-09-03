@@ -7,13 +7,9 @@
   const WALLET_STORE = "bull-lab-wallets-v1";
   const AD_COST = 18;
   const MIN_SEED = 80;
-  // JSONBlob PUT-create only accepts IDs it can parse: ObjectId, snowflake, or UUID v1.
-  const WORLD_BLOB_ID = "b011ab00-7a6e-11ab-8c00-00b011ab0001";
-  const WORLD_CREATE_URL = "https://jsonblob.com/api/jsonBlob";
-  const WORLD_URL_STORE = "bull-lab-world-url-v1";
-  const WORLD_HEADERS = { "Content-Type": "application/json", Accept: "application/json" };
-  const FETCH_MS = 6000;
-  const POLL_MS = 2500;
+  const FIREBASE_WORLD_PATH = "bull-lab/world";
+  const FETCH_MS = 8000;
+  const POLL_MS = 8000;
   const KST_POLL_MS = 45000;
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
@@ -712,11 +708,13 @@
     botsSpawned: false,
     online: false,
     lastToastAt: 0,
-    worldUrl: "",
     entering: false,
     inMarket: false,
     appliedPeriodId: "",
     settling: false,
+    db: null,
+    applyingRemote: false,
+    unsub: null,
   };
   const kstClock = {
     ok: false,
@@ -821,6 +819,109 @@
     return false;
   }
 
+  function firebaseConfig() {
+    const cfg = window.FIREBASE_CONFIG || {};
+    return cfg.databaseURL && cfg.apiKey ? cfg : null;
+  }
+
+  function firebaseDb() {
+    if (worldSync.db) return worldSync.db;
+    const cfg = firebaseConfig();
+    if (!cfg || typeof firebase === "undefined") return null;
+    try {
+      if (!firebase.apps.length) firebase.initializeApp(cfg);
+      worldSync.db = firebase.database();
+      return worldSync.db;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  }
+
+  function firebaseReady() {
+    return !!firebaseDb();
+  }
+
+  function safeFbKey(id) {
+    return String(id || "").replace(/[.#$\[\]/]/g, "_");
+  }
+
+  function isSchoolListing(asset) {
+    if (!asset) return false;
+    if (asset.playerCompany) return true;
+    if (asset.founderId) return true;
+    const id = String(asset.id || "");
+    return id.startsWith("co-") && !CORE_ASSET_IDS.includes(id);
+  }
+
+  function listFromMap(map) {
+    if (!map) return [];
+    if (Array.isArray(map)) return map.filter(Boolean);
+    return Object.keys(map).map((key) => {
+      const row = map[key];
+      if (!row || typeof row !== "object") return null;
+      return { ...row, id: row.id || key };
+    }).filter(Boolean);
+  }
+
+  function worldFromFirebase(val) {
+    if (!val || typeof val !== "object") return null;
+    const meta = val.meta && typeof val.meta === "object" ? val.meta : val;
+    return {
+      revision: meta.revision || 0,
+      updatedAt: meta.updatedAt || 0,
+      week: meta.week,
+      season: meta.season,
+      lastSettledPeriodId: meta.lastSettledPeriodId || "",
+      eventKey: meta.eventKey,
+      eventDeck: meta.eventDeck || val.eventDeck || [],
+      event: meta.event || val.event,
+      botsSpawned: false,
+      assets: listFromMap(val.assets || meta.assets),
+      ads: listFromMap(val.ads || meta.ads),
+      players: listFromMap(val.players || meta.players),
+      seenPlayers: listFromMap(val.seenPlayers || meta.seenPlayers),
+      chatRooms: listFromMap(val.chatRooms || meta.chatRooms),
+    };
+  }
+
+  function firebaseUpdatesFromPayload(payload) {
+    const updates = {
+      meta: {
+        revision: payload.revision || 0,
+        updatedAt: payload.updatedAt || Date.now(),
+        week: payload.week,
+        season: payload.season,
+        lastSettledPeriodId: payload.lastSettledPeriodId || "",
+        eventKey: payload.eventKey,
+        eventDeck: payload.eventDeck || [],
+        event: payload.event || null,
+        botsSpawned: false,
+      },
+    };
+    (payload.assets || []).forEach((asset) => {
+      if (!asset?.id) return;
+      updates[`assets/${safeFbKey(asset.id)}`] = publicAsset(asset);
+    });
+    (payload.players || []).forEach((player) => {
+      if (!player?.id) return;
+      updates[`players/${safeFbKey(player.id)}`] = player;
+    });
+    (payload.seenPlayers || []).forEach((item) => {
+      if (!item?.id) return;
+      updates[`seenPlayers/${safeFbKey(item.id)}`] = item;
+    });
+    (payload.chatRooms || []).forEach((room) => {
+      if (!room?.id) return;
+      updates[`chatRooms/${safeFbKey(room.id)}`] = room;
+    });
+    (payload.ads || []).forEach((ad, index) => {
+      const key = safeFbKey(ad?.assetId || ad?.id || `ad-${index}`);
+      updates[`ads/${key}`] = ad;
+    });
+    return updates;
+  }
+
   function readLocalWorld() {
     try {
       return JSON.parse(localStorage.getItem(LOCAL_WORLD_KEY) || "null");
@@ -835,27 +936,6 @@
     } catch {
       /* quota */
     }
-  }
-
-  function defaultWorldUrl() {
-    return `https://jsonblob.com/api/jsonBlob/${WORLD_BLOB_ID}`;
-  }
-
-  function activeWorldUrl() {
-    if (worldSync.worldUrl) return worldSync.worldUrl;
-    try {
-      const saved = localStorage.getItem(WORLD_URL_STORE);
-      if (saved) worldSync.worldUrl = saved;
-    } catch {
-      /* ignore */
-    }
-    return worldSync.worldUrl || defaultWorldUrl();
-  }
-
-  function rememberWorldUrl(url) {
-    if (!url) return;
-    worldSync.worldUrl = url;
-    try { localStorage.setItem(WORLD_URL_STORE, url); } catch { /* ignore */ }
   }
 
   async function fetchWithTimeout(url, options = {}, ms = FETCH_MS) {
@@ -1032,8 +1112,8 @@
     });
     const extras = state.assets.filter((asset) => !CORE_ASSET_IDS.includes(asset.id));
     state.assets = [...cores, ...extras];
-    if (!selectedChartId || !state.assets.some((asset) => asset.id === selectedChartId && asset.playerCompany)) {
-      selectedChartId = state.assets.find((asset) => asset.playerCompany)?.id || "";
+    if (!selectedChartId || !state.assets.some((asset) => asset.id === selectedChartId && isSchoolListing(asset))) {
+      selectedChartId = state.assets.find((asset) => isSchoolListing(asset))?.id || "";
     }
   }
 
@@ -1862,6 +1942,7 @@
   function botTick() {}
 
   function stopWorldSync() {
+    unsubscribeWorld();
     if (worldSync.pollTimer) clearInterval(worldSync.pollTimer);
     if (worldSync.clockTimer) clearInterval(worldSync.clockTimer);
     if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
@@ -2135,7 +2216,7 @@
   }
 
   function hydrateAsset(row) {
-    return {
+    const asset = {
       trend: 0.002,
       noise: 0.01,
       risk: 4,
@@ -2156,6 +2237,8 @@
       founderName: "",
       ...row,
     };
+    if (isSchoolListing(asset)) asset.playerCompany = true;
+    return asset;
   }
 
   function eventIndex(event) {
@@ -2289,6 +2372,7 @@
       const local = byId.get(row.id);
       if (!local) {
         const added = hydrateAsset(row);
+        if (isSchoolListing(added)) added.playerCompany = true;
         state.assets.push(added);
         byId.set(row.id, added);
         ensureHolding(state.holdings, row.id);
@@ -2360,49 +2444,21 @@
   }
 
   async function fetchWorld() {
-    const url = activeWorldUrl();
-    const res = await fetchWithTimeout(url, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error("world-get");
-    const data = await res.json();
-    writeLocalWorld(data);
-    rememberWorldUrl(url);
-    return data;
-  }
-
-  function blobUrlFromResponse(res) {
-    const headerId = res.headers.get("X-jsonblob") || res.headers.get("X-jsonblob-id");
-    const loc = res.headers.get("Location") || "";
-    const id = headerId || loc.split("/").filter(Boolean).pop();
-    return id ? `https://jsonblob.com/api/jsonBlob/${id}` : "";
+    const db = firebaseDb();
+    if (!db) return readLocalWorld();
+    const snap = await db.ref(FIREBASE_WORLD_PATH).once("value");
+    const world = worldFromFirebase(snap.val());
+    if (world) writeLocalWorld(world);
+    return world;
   }
 
   async function putWorld(payload) {
     writeLocalWorld(payload);
-    let body = JSON.stringify(payload);
-    if (body.length > 90000) body = JSON.stringify(slimWorldPayload(payload));
-    const headers = WORLD_HEADERS;
-    let url = activeWorldUrl();
-    let res = await fetchWithTimeout(url, { method: "PUT", headers, body });
-    if (res.status === 404 || res.status === 405) {
-      res = await fetchWithTimeout(WORLD_CREATE_URL, { method: "POST", headers, body });
-      const created = blobUrlFromResponse(res);
-      if (created) {
-        rememberWorldUrl(created);
-        url = created;
-        const seeded = await fetchWithTimeout(defaultWorldUrl(), { method: "PUT", headers, body });
-        if (seeded.ok || seeded.status === 201) {
-          rememberWorldUrl(defaultWorldUrl());
-          url = defaultWorldUrl();
-          res = seeded;
-        }
-      }
-    }
-    if (res.status === 413) {
-      body = JSON.stringify(slimWorldPayload(payload));
-      res = await fetchWithTimeout(url, { method: "PUT", headers, body });
-    }
-    if (!res.ok && res.status !== 201) throw new Error("world-put");
+    const db = firebaseDb();
+    if (!db) throw new Error("firebase-missing");
+    const slim = slimWorldPayload(payload);
+    const updates = JSON.parse(JSON.stringify(firebaseUpdatesFromPayload(slim)));
+    await db.ref(FIREBASE_WORLD_PATH).update(updates);
     worldSync.revision = payload.revision;
     worldSync.updatedAt = payload.updatedAt;
     worldSync.touched.clear();
@@ -2416,11 +2472,57 @@
     const now = Date.now();
     if (now - worldSync.lastToastAt < 25000) return;
     worldSync.lastToastAt = now;
-    toast("📡", "동기화 지연", "공유 시장에 잠시 닿지 못했습니다. 곧 다시 시도합니다.");
+    toast("📡", "공유 시장", firebaseReady()
+      ? "Firebase에 잠시 닿지 못했습니다. 곧 다시 시도합니다."
+      : "Firebase 설정이 없습니다. firebase-config.js에 프로젝트 값을 넣어 주세요.");
+  }
+
+  function applyRemoteWorld(remote, preferLocal) {
+    if (!remote || !state?.active) return;
+    worldSync.applyingRemote = true;
+    try {
+      const before = totalAssets();
+      const result = mergeWorld(remote, { preferLocal });
+      if (result.weekChanged) {
+        computeWeekExpectations();
+        resetLocalWeek();
+      }
+      if (result.settled) showWeekResult(totalAssets() - before, totalAssets(), 0);
+      ensureCoreListings();
+      renderAll();
+    } finally {
+      worldSync.applyingRemote = false;
+    }
+  }
+
+  function unsubscribeWorld() {
+    const db = firebaseDb();
+    if (db && worldSync.unsub) db.ref(FIREBASE_WORLD_PATH).off("value", worldSync.unsub);
+    worldSync.unsub = null;
+  }
+
+  function subscribeWorld() {
+    const db = firebaseDb();
+    if (!db) return;
+    unsubscribeWorld();
+    const handler = (snap) => {
+      if (worldSync.putting) return;
+      const remote = worldFromFirebase(snap.val());
+      if (!remote) return;
+      worldSync.online = true;
+      applyRemoteWorld(remote, true);
+      renderSyncStatus();
+    };
+    db.ref(FIREBASE_WORLD_PATH).on("value", handler);
+    worldSync.unsub = handler;
   }
 
   async function pushWorld() {
-    if (worldSync.putting || !state?.active) return;
+    if (worldSync.putting || worldSync.applyingRemote || !state?.active) return;
+    if (!firebaseReady()) {
+      noteWorldError();
+      return;
+    }
     worldSync.putting = true;
     try {
       let remote = null;
@@ -2455,28 +2557,15 @@
   }
 
   async function pullWorld() {
-    if (!state?.active || worldSync.putting) return;
+    if (!state?.active || worldSync.putting || worldSync.applyingRemote) return;
     try {
       const remote = await fetchWorld();
-      if (!remote) {
-        queuePush();
-        return;
-      }
+      if (!remote) return;
       worldSync.online = true;
+      applyRemoteWorld(remote, true);
       renderSyncStatus();
-      if ((remote.revision || 0) < worldSync.revision) return;
-      const before = totalAssets();
-      const result = mergeWorld(remote, { preferLocal: false });
-      if (result.weekChanged) {
-        computeWeekExpectations();
-        resetLocalWeek();
-      }
-      if (result.settled) {
-        showWeekResult(totalAssets() - before, totalAssets(), 0);
-      }
-      renderAll();
     } catch {
-      // poll again later
+      /* listener will retry */
     }
   }
 
@@ -2597,7 +2686,7 @@
   function renderSyncStatus() {
     if (!els.playerCount) return;
     const n = Math.max(1, humansRanked().length);
-    const sync = worldSync.online ? "공유됨" : "연결 중";
+    const sync = worldSync.online ? "Firebase 공유" : (firebaseReady() ? "연결 중" : "Firebase 없음");
     els.playerCount.textContent = n ? `접속 ${n}명 · ${sync}` : sync;
   }
 
@@ -2619,6 +2708,7 @@
 
   function startWorldLoop() {
     stopWorldSync();
+    subscribeWorld();
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
     worldSync.kstTimer = setInterval(() => { refreshKst().then(() => tickClock()); }, KST_POLL_MS);
@@ -2660,9 +2750,14 @@
       applyWallet(readWallet(session.id));
       const local = readLocalWorld();
       if (local) {
-        try { mergeWorld(local, { preferLocal: false }); } catch { /* ignore bad cache */ }
+        try { mergeWorld(local, { preferLocal: true }); } catch { /* ignore bad cache */ }
       }
-      try { restoreAccountWealth(local); } catch { ensureTradableCash(); }
+      let fetched = null;
+      try { fetched = await fetchWorld(); } catch { fetched = null; }
+      if (fetched) {
+        try { mergeWorld(fetched, { preferLocal: false }); } catch { /* keep local listings */ }
+      }
+      try { restoreAccountWealth(fetched || local); } catch { ensureTradableCash(); }
       purgeBots();
       ensureCoreListings();
       ensureTradableCash();
@@ -2674,21 +2769,13 @@
       beginLocalGame();
       startWorldLoop();
       queuePush();
-      toast("📈", "시장 입장", "거래가 시작됐습니다. 한빛테크와 학생 회사 모두 지금 사고팔 수 있습니다.");
+      toast("📈", "시장 입장", firebaseReady()
+        ? "거래가 시작됐습니다. 다른 학생이 만든 회사도 Firebase에서 바로 보입니다."
+        : "거래는 열렸지만 Firebase 설정이 없어 다른 학생 회사는 아직 안 보입니다.");
       closeModal(els.lobbyModal);
       closeModal(els.setupModal);
       await maybeSettleFromClock();
       refreshKst().catch(() => useDeviceKst());
-      fetchWorld().then((fetched) => {
-        if (!fetched || !state?.active) return;
-        worldSync.online = true;
-        mergeWorld(fetched, { preferLocal: true });
-        restoreAccountWealth(fetched);
-        ensureCoreListings();
-        ensureTradableCash();
-        renderAll();
-        maybeSettleFromClock();
-      }).catch(() => {});
     } catch (err) {
       console.error(err);
       if (els.lobbyStatus) els.lobbyStatus.textContent = "입장에 실패했습니다. 시장 입장을 다시 눌러 주세요.";
@@ -3171,7 +3258,7 @@
   }
 
   function liveCompanies() {
-    return (state?.assets || []).filter((asset) => asset.playerCompany);
+    return (state?.assets || []).filter(isSchoolListing);
   }
 
   function ensureLiveChartSelection() {
@@ -3190,7 +3277,7 @@
 
   function selectChart(id) {
     const asset = state?.assets?.find((item) => item.id === id);
-    if (!asset?.playerCompany) return;
+    if (!isSchoolListing(asset)) return;
     selectedChartId = id;
     if (els.liveChartPills) {
       els.liveChartPills.querySelectorAll("[data-chart-id]").forEach((pill) => {
@@ -3203,7 +3290,7 @@
   function renderLiveEmpty() {
     if (els.liveChartPills) els.liveChartPills.innerHTML = "";
     if (els.liveChartTitle) els.liveChartTitle.textContent = "학교 기업 시세";
-    if (els.liveChartMeta) els.liveChartMeta.textContent = "새로 만든 학교 회사만 보입니다. 아직 상장된 회사가 없습니다.";
+    if (els.liveChartMeta) els.liveChartMeta.textContent = "학생들이 만든 학교 회사만 보입니다. 아직 상장된 회사가 없습니다.";
     if (els.liveChartPrice) els.liveChartPrice.textContent = "";
     if (els.liveChartLine) els.liveChartLine.setAttribute("d", "");
     if (els.liveChartArea) els.liveChartArea.setAttribute("d", "");
@@ -3258,7 +3345,7 @@
       const first = values[0] || asset.price;
       const last = values[values.length - 1] || asset.price;
       const change = first ? (last - first) / first : 0;
-      els.liveChartMeta.textContent = `학교 기업 · 최근 ${percent(change)}`;
+      els.liveChartMeta.textContent = `학교 기업 · ${asset.founderName || "창업"} · 최근 ${percent(change)}`;
     }
     if (els.liveChartPrice) {
       els.liveChartPrice.textContent = money(asset.price);
