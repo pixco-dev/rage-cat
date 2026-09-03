@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260903s">
+  <link rel="stylesheet" href="style.css?v=20260903v">
 </head>
 <body>
   <header class="site-header">
@@ -184,10 +184,33 @@
           <div class="asset-section-head">
             <div>
               <h3>투자 자산</h3>
-              <span>기본 전망은 비공개입니다. 광고·수급·리서치로 판단하세요</span>
+              <span>한빛테크 등 기본 6종목은 인원과 관계없이 항상 열려 있습니다. 학생 회사는 그 위에 추가됩니다.</span>
             </div>
             <div class="legend"><span><i class="up"></i>매수세</span><span><i class="down"></i>매도세</span></div>
           </div>
+
+          <article class="live-board" aria-label="회사별 실시간 시세">
+            <div class="live-board-head">
+              <div>
+                <span class="overline">LIVE TAPE</span>
+                <h3 id="live-chart-title">실시간 시세</h3>
+                <p id="live-chart-meta">종목을 고르면 최근 흐름이 보입니다</p>
+              </div>
+              <strong id="live-chart-price"></strong>
+            </div>
+            <div class="live-chart-pills" id="live-chart-pills"></div>
+            <svg class="live-chart" id="live-chart" viewBox="0 0 640 180" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="live-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="var(--live-color, #ef5b3f)" stop-opacity=".28"/>
+                  <stop offset="100%" stop-color="var(--live-color, #ef5b3f)" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path class="live-chart-grid" d="M0 36H640M0 90H640M0 144H640M128 0V180M256 0V180M384 0V180M512 0V180"/>
+              <path class="live-chart-area" id="live-chart-area" d=""></path>
+              <path class="live-chart-line" id="live-chart-line" d=""></path>
+            </svg>
+          </article>
 
           <div class="asset-list" id="asset-list"></div>
 
@@ -443,6 +466,6 @@
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="game.js?v=20260903s"></script>
+  <script src="game.js?v=20260903v"></script>
 </body>
 </html>

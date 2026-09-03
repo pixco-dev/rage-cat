@@ -15,6 +15,12 @@
   const KST_POLL_MS = 45000;
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
+  const TICK_MS = 1000;
+  const TICK_CAP = 96;
+  const LIVE_W = 640;
+  const LIVE_H = 180;
+  const SPARK_W = 120;
+  const SPARK_H = 36;
 
   const PERIODS = [
     { n: 1, h: 9, m: 20, label: "1교시" },
@@ -40,6 +46,7 @@
     { id: "gold", symbol: "GLD", name: "금 현물 ETF", sector: "안전자산 · 원자재", sectorKey: "gold", price: 96, trend: .001, noise: .008, risk: 1, color: "#d6a52d", dividend: 0, float: 520 },
     { id: "coin", symbol: "LBC", name: "럭키비트", sector: "가상자산 · 고위험", sectorKey: "coin", price: 24, trend: 0, noise: .038, risk: 5, color: "#ef5b6f", dividend: 0, float: 300 },
   ];
+  const CORE_ASSET_IDS = ASSET_BLUEPRINTS.map((item) => item.id);
 
   const SECTORS = [
     { key: "tech", label: "기술 · 반도체" },
@@ -666,6 +673,13 @@
     chatLog: $("#chat-log"),
     chatForm: $("#chat-form"),
     chatInput: $("#chat-input"),
+    liveChart: $("#live-chart"),
+    liveChartLine: $("#live-chart-line"),
+    liveChartArea: $("#live-chart-area"),
+    liveChartPills: $("#live-chart-pills"),
+    liveChartTitle: $("#live-chart-title"),
+    liveChartMeta: $("#live-chart-meta"),
+    liveChartPrice: $("#live-chart-price"),
   };
 
   let selectedMode = "rookie";
@@ -677,6 +691,7 @@
   let authNext = "setup";
   let pendingAdImage = "";
   let activeChatRoomId = "";
+  let selectedChartId = "";
   const worldSync = {
     revision: 0,
     updatedAt: 0,
@@ -687,6 +702,7 @@
     pollTimer: null,
     clockTimer: null,
     kstTimer: null,
+    chartTimer: null,
     touched: new Set(),
     chatRooms: [],
     seenPlayers: [],
@@ -904,6 +920,7 @@
       initialPrice: asset.price,
       lastChange: 0,
       history: [asset.price],
+      ticks: [asset.price],
       weekFlow: 0,
       lastFlow: 0,
       weekOpen: asset.price,
@@ -916,6 +933,46 @@
       opsNote: "",
       opsShock: 0,
     }));
+  }
+
+  function ensureCoreListings() {
+    if (!state?.assets) return;
+    const byId = new Map(state.assets.map((asset) => [asset.id, asset]));
+    const cores = ASSET_BLUEPRINTS.map((bp) => {
+      const existing = byId.get(bp.id);
+      if (existing && !existing.playerCompany) {
+        existing.playerCompany = false;
+        existing.founderId = null;
+        ensureHolding(state.holdings, bp.id);
+        return existing;
+      }
+      const row = {
+        ...bp,
+        initialPrice: existing?.initialPrice || bp.price,
+        lastChange: existing?.lastChange || 0,
+        history: existing?.history?.length ? existing.history : [existing?.price || bp.price],
+        ticks: existing?.ticks?.length ? existing.ticks : [existing?.price || bp.price],
+        weekFlow: existing?.weekFlow || 0,
+        lastFlow: existing?.lastFlow || 0,
+        weekOpen: existing?.weekOpen || existing?.price || bp.price,
+        price: existing?.price || bp.price,
+        playerCompany: false,
+        founderId: null,
+        founderName: "",
+        trust: 0.72,
+        adWeeks: 0,
+        ad: existing?.ad || null,
+        opsNote: "",
+        opsShock: 0,
+      };
+      ensureHolding(state.holdings, bp.id);
+      return row;
+    });
+    const extras = state.assets.filter((asset) => !CORE_ASSET_IDS.includes(asset.id));
+    state.assets = [...cores, ...extras];
+    if (!selectedChartId || !state.assets.some((asset) => asset.id === selectedChartId)) {
+      selectedChartId = state.assets[0]?.id || "";
+    }
   }
 
   function emptyHolding() {
@@ -1412,10 +1469,79 @@
 
   function applyFlow(asset, signedQty) {
     const float = Math.max(40, asset.float || 400);
-    const k = asset.playerCompany ? 0.62 : 0.3;
+    const k = asset.playerCompany ? 0.85 : 0.3;
     const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * k));
     asset.price = Math.max(5, round1(asset.price * (1 + impact)));
     asset.weekFlow = (asset.weekFlow || 0) + signedQty;
+    pushTick(asset);
+  }
+
+  function hashUnit(seed) {
+    let h = 2166136261;
+    for (let i = 0; i < seed.length; i += 1) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+    return (h >>> 0) / 4294967296;
+  }
+
+  function chartPrice(asset) {
+    const sec = Math.floor((kstClock.ok ? kstNowMs() : Date.now()) / 1000);
+    const unit = hashUnit(`${asset.id}:${sec}`) * 2 - 1;
+    const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
+    const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.4 : 1);
+    const wiggle = flow * 0.01 + unit * noise * 0.055;
+    return Math.max(5, round1(asset.price * (1 + Math.max(-0.018, Math.min(0.018, wiggle)))));
+  }
+
+  function ensureTicks(asset) {
+    if (!asset) return [];
+    if (!Array.isArray(asset.ticks) || asset.ticks.length < 1) {
+      const hist = asset.history?.length ? asset.history.slice(-12) : [asset.price];
+      asset.ticks = hist.map((price) => price);
+    }
+    return asset.ticks;
+  }
+
+  function pushTick(asset, value) {
+    if (!asset) return;
+    const ticks = ensureTicks(asset);
+    const next = Number.isFinite(value) ? value : chartPrice(asset);
+    if (ticks.length && Math.abs(ticks[ticks.length - 1] - next) < 0.0001) {
+      ticks[ticks.length - 1] = next;
+    } else {
+      ticks.push(next);
+    }
+    if (ticks.length > TICK_CAP) ticks.splice(0, ticks.length - TICK_CAP);
+  }
+
+  function sampleLiveTicks() {
+    if (!state?.active) return;
+    state.assets.forEach((asset) => pushTick(asset));
+  }
+
+  function sparkPath(values, w, h, pad = 3) {
+    const pts = values.length < 2 ? [values[0] || 0, values[0] || 0] : values;
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const span = Math.max(0.08, max - min);
+    return pts.map((value, index) => {
+      const x = pad + (index / Math.max(1, pts.length - 1)) * (w - pad * 2);
+      const y = pad + (1 - (value - min) / span) * (h - pad * 2);
+      return `${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join(" ");
+  }
+
+  function sparkArea(values, w, h) {
+    const line = sparkPath(values, w, h);
+    if (!line) return "";
+    return `${line} L${w} ${h} L0 ${h} Z`;
+  }
+
+  function tickToneClass(values) {
+    if (!values.length) return "flat";
+    const first = values[0];
+    const last = values[values.length - 1];
+    if (last > first * 1.001) return "up";
+    if (last < first * 0.999) return "down";
+    return "flat";
   }
 
   function flowHint(asset) {
@@ -1452,7 +1578,7 @@
     const actor = getActor(playerId);
     const asset = assetById(assetId);
     qty = Math.floor(Number(qty) || 0);
-    if (!actor || !asset || qty < 1 || state.locked) return { ok: false, err: "locked" };
+    if (!actor || !asset || qty < 1 || !state.active) return { ok: false, err: "locked" };
     const holding = ensureHolding(actor.holdings, assetId);
     if (side === "buy") {
       const cost = asset.price * qty;
@@ -1508,6 +1634,7 @@
       initialPrice: price,
       lastChange: 0,
       history: [price],
+      ticks: [price],
       trend: 0.001,
       noise: 0.022,
       risk: 4,
@@ -1542,13 +1669,26 @@
   }
 
   function rollCompanyOps(asset) {
-    const shock = (random() * 2 - 1) * 0.045;
-    const up = ["주간 매출이 예상보다 단단했습니다.", "신규 주문이 소폭 늘었습니다.", "고정비를 잘 막았습니다."];
+    const shock = (random() * 2 - 1) * 0.07 + 0.022;
+    const up = ["주간 매출이 예상보다 단단했습니다.", "신규 주문이 늘었습니다.", "고정비를 잘 막았습니다."];
     const down = ["고정비가 발목을 잡았습니다.", "수주가 한 박자 밀렸습니다.", "재고가 조금 쌓였습니다."];
     const flat = ["큰 이슈 없이 운영됐습니다.", "현금흐름은 평범했습니다.", "광고와 별개로 현장은 조용했습니다."];
     asset.opsShock = shock;
-    asset.opsNote = shock > 0.012 ? up[Math.floor(random() * up.length)] : shock < -0.012 ? down[Math.floor(random() * down.length)] : flat[Math.floor(random() * flat.length)];
+    asset.opsNote = shock > 0.012 ? up[Math.floor(random() * up.length)] : shock < -0.008 ? down[Math.floor(random() * down.length)] : flat[Math.floor(random() * flat.length)];
     return shock;
+  }
+
+  function creditFounderOps(asset) {
+    if (!asset?.playerCompany || !asset.founderId) return 0;
+    const shock = asset.opsShock || 0;
+    const payout = round1(Math.max(0.8, asset.price * 0.045 * (1.2 + shock * 6)));
+    const actor = getActor(asset.founderId);
+    if (!actor || !(payout > 0)) return 0;
+    actor.cash = round1(actor.cash + payout);
+    if (actor.isLocal) {
+      toast("🏢", `${asset.name} 영업입금`, `창업 계좌로 ${money(payout)}이 들어왔습니다.`);
+    }
+    return payout;
   }
 
   function publishAd(playerId, slogan, claim, image) {
@@ -1631,10 +1771,12 @@
     if (worldSync.pollTimer) clearInterval(worldSync.pollTimer);
     if (worldSync.clockTimer) clearInterval(worldSync.clockTimer);
     if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
+    if (worldSync.chartTimer) clearInterval(worldSync.chartTimer);
     if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
     worldSync.pollTimer = null;
     worldSync.clockTimer = null;
     worldSync.kstTimer = null;
+    worldSync.chartTimer = null;
     worldSync.putTimer = null;
   }
 
@@ -1666,8 +1808,8 @@
       h: Number(map.hour),
       mi: Number(map.minute),
       s: Number(map.second),
-      weekday: map.weekday,
-      ymd: `${map.year}-${map.month}-${map.day}`,
+      weekday: String(map.weekday || "").slice(0, 3),
+      ymd: `${map.year}-${String(map.month).padStart(2, "0")}-${String(map.day).padStart(2, "0")}`,
     };
   }
 
@@ -1789,6 +1931,21 @@
     return cursor;
   }
 
+  function ymdDayDiff(from, to) {
+    const [y1, m1, d1] = from.split("-").map(Number);
+    const [y2, m2, d2] = to.split("-").map(Number);
+    return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+  }
+
+  function kstMsFromYmdHm(ymd, h, m) {
+    return Date.parse(`${ymd}T${pad2(h)}:${pad2(m)}:00+09:00`);
+  }
+
+  function weekdayKo(ymd) {
+    const map = { Sun: "일요일", Mon: "월요일", Tue: "화요일", Wed: "수요일", Thu: "목요일", Fri: "금요일", Sat: "토요일" };
+    return map[weekdayOfYmd(ymd)] || ymd;
+  }
+
   function lastEndedPeriodId(parts) {
     if (!isWeekend(parts)) {
       const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
@@ -1838,25 +1995,16 @@
     }
     const parts = kstClock.parts;
     const next = nextSettlement(parts);
-    const targetMin = minutesOf(next.slot.h, next.slot.m);
-    const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
-    let remain = targetMin - nowMin;
-    if (next.ymd !== parts.ymd) {
-      const days = next.ymd > parts.ymd ? 1 : 0;
-      remain = minutesOf(24, 0) - nowMin + minutesOf(next.slot.h, next.slot.m) + days * 24 * 60;
-      if (isWeekend(parts) || parts.weekday === "Fri" && nowMin >= minutesOf(16, 0)) {
-        const map = { Fri: 3, Sat: 2, Sun: 1 };
-        remain = (map[parts.weekday] || 1) * 24 * 60 - nowMin + minutesOf(9, 20);
-      }
-    }
-    const mins = Math.max(0, Math.floor(remain));
+    const targetMs = kstMsFromYmdHm(next.ymd, next.slot.h, next.slot.m);
+    const mins = Math.max(0, Math.floor((targetMs - kstNowMs()) / 60000));
     const hh = Math.floor(mins / 60);
     const mm = mins % 60;
     const count = hh > 0 ? `${hh}시간 ${mm}분` : `${mm}분`;
-    const kst = `KST ${String(parts.h).padStart(2, "0")}:${String(parts.mi).padStart(2, "0")}`;
-    const slot = `${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}`;
+    const kst = `KST ${pad2(parts.h)}:${pad2(parts.mi)}`;
+    const slot = `${next.slot.label} ${pad2(next.slot.h)}:${pad2(next.slot.m)}`;
+    const when = weekdayKo(next.ymd);
     return {
-      line: `${kst} · 다음 주가 공개 ${slot}까지 ${count}`,
+      line: `${kst} · 다음 주가 공개 ${when} ${slot}까지 ${count}`,
       hint: "09:20 등 교시 종료 시각에 뉴스·수급이 가격으로 공개됩니다. 그 외 시간에도 사고팔 수 있습니다.",
       open: true,
     };
@@ -2054,6 +2202,7 @@
         local.lastFlow = row.lastFlow;
         local.weekOpen = row.weekOpen;
         local.history = row.history || local.history;
+        pushTick(local, local.price);
       }
     });
 
@@ -2076,6 +2225,7 @@
 
     mergePlayers(remote.players);
     purgeBots();
+    ensureCoreListings();
 
     state.assets.forEach((asset) => ensureHolding(state.holdings, asset.id));
     if (state.assets.some((asset) => asset.founderId === state.playerId)) {
@@ -2208,8 +2358,12 @@
 
   function applySettlementPrices() {
     botTick();
+    ensureCoreListings();
     state.assets.forEach((asset) => {
-      if (asset.playerCompany) rollCompanyOps(asset);
+      if (asset.playerCompany) {
+        rollCompanyOps(asset);
+        creditFounderOps(asset);
+      }
       const newsChange = state.changes[asset.id] || 0;
       const extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
       asset.price = Math.max(5, round1(asset.price * (1 + extra)));
@@ -2218,6 +2372,7 @@
       asset.lastChange = open > 0 ? (asset.price - open) / open : extra;
       asset.lastFlow = asset.weekFlow || 0;
       asset.history = [...(asset.history || []), asset.price].slice(-16);
+      pushTick(asset, asset.price);
       worldSync.touched.add(asset.id);
     });
   }
@@ -2275,7 +2430,7 @@
     showWeekResult(after - before, after, localDividend);
     worldSync.lastSettledPeriodId = periodKey;
     advanceSharedWeek();
-    state.locked = true;
+    state.locked = false;
     syncLocalPlayer();
     await pushWorld();
     renderAll();
@@ -2322,6 +2477,11 @@
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
     worldSync.kstTimer = setInterval(() => { refreshKst().then(() => tickClock()); }, KST_POLL_MS);
+    worldSync.chartTimer = setInterval(() => {
+      if (!state?.active) return;
+      sampleLiveTicks();
+      updateLiveCharts();
+    }, TICK_MS);
     window.addEventListener("focus", onWorldFocus);
   }
 
@@ -2349,6 +2509,7 @@
     }
     restoreAccountWealth(remote);
     purgeBots();
+    ensureCoreListings();
     if (kstClock.ok && kstClock.parts) {
       if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
     }
@@ -2660,6 +2821,7 @@
     state.roomCode = "GLOBAL";
     state.active = true;
     state.locked = false;
+    ensureCoreListings();
     syncLocalPlayer();
     if (!state.event) prepareWeek();
     else {
@@ -2756,6 +2918,8 @@
     renderSummary();
     renderNews();
     renderAssets();
+    renderLiveBoard();
+    updateLiveCharts();
     renderPortfolio();
     renderMissions();
     renderBadges();
@@ -2808,22 +2972,92 @@
     return Array.from({ length: 5 }, (_, index) => `<i class="${index < asset.risk ? "on" : ""}"></i>`).join("");
   }
 
+  function sparkSvg(asset, w, h) {
+    const values = ensureTicks(asset);
+    const tone = tickToneClass(values);
+    return `<svg class="asset-spark ${tone}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${sparkPath(values, w, h)}"></path></svg>`;
+  }
+
+  function selectChart(id) {
+    if (!id || !state?.assets?.some((asset) => asset.id === id)) return;
+    selectedChartId = id;
+    if (els.liveChartPills) {
+      els.liveChartPills.querySelectorAll("[data-chart-id]").forEach((pill) => {
+        pill.classList.toggle("active", pill.dataset.chartId === id);
+      });
+    }
+    updateLiveCharts();
+  }
+
+  function renderLiveBoard() {
+    if (!els.liveChartPills || !state?.assets) return;
+    ensureCoreListings();
+    if (!selectedChartId) selectedChartId = state.assets[0]?.id || "";
+    els.liveChartPills.innerHTML = state.assets.map((asset) => `
+      <button type="button" data-chart-id="${asset.id}" class="${asset.id === selectedChartId ? "active" : ""}" style="--asset-color:${asset.color}">
+        <b>${asset.symbol}</b>
+        <span>${asset.name}</span>
+      </button>
+    `).join("");
+  }
+
+  function updateLiveCharts() {
+    if (!state?.assets) return;
+    state.assets.forEach((asset) => {
+      const row = els.assetList?.querySelector(`[data-id="${asset.id}"]`);
+      if (!row) return;
+      const values = ensureTicks(asset);
+      const tone = tickToneClass(values);
+      const spark = row.querySelector(".asset-spark path");
+      if (spark) spark.setAttribute("d", sparkPath(values, SPARK_W, SPARK_H));
+      const svg = row.querySelector(".asset-spark");
+      if (svg) svg.className = `asset-spark ${tone}`;
+      const last = row.querySelector(".asset-last");
+      if (last) last.textContent = money(asset.price);
+    });
+    const asset = state.assets.find((item) => item.id === selectedChartId) || state.assets[0];
+    if (!asset) return;
+    const values = ensureTicks(asset);
+    const tone = tickToneClass(values);
+    if (els.liveChartLine) els.liveChartLine.setAttribute("d", sparkPath(values, LIVE_W, LIVE_H));
+    if (els.liveChartArea) els.liveChartArea.setAttribute("d", sparkArea(values, LIVE_W, LIVE_H));
+    if (els.liveChart) {
+      els.liveChart.classList.remove("up", "down", "flat");
+      els.liveChart.classList.add(tone);
+      els.liveChart.style.setProperty("--live-color", asset.color);
+    }
+    if (els.liveChartTitle) els.liveChartTitle.textContent = `${asset.symbol} · ${asset.name}`;
+    if (els.liveChartMeta) {
+      const first = values[0] || asset.price;
+      const last = values[values.length - 1] || asset.price;
+      const change = first ? (last - first) / first : 0;
+      els.liveChartMeta.textContent = asset.playerCompany
+        ? `학생 회사 · 최근 ${percent(change)}`
+        : `기본 종목 · 최근 ${percent(change)}`;
+    }
+    if (els.liveChartPrice) {
+      els.liveChartPrice.textContent = money(asset.price);
+      els.liveChartPrice.className = tickToneClass(values);
+    }
+  }
+
   function renderAssets() {
+    ensureCoreListings();
     els.assetList.innerHTML = state.assets.map((asset) => {
       const holding = ensureHolding(state.holdings, asset.id);
       const forecast = forecastFor(asset);
       const maxBuy = Math.floor(state.cash / asset.price);
-      const disabled = !state.active || state.locked;
+      const disabled = !state.active;
       const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
       const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
       const flow = flowHint(asset);
-      const founder = asset.playerCompany ? `<span class="founder-tag">${asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업")} 상장</span>` : "";
+      const founder = asset.playerCompany ? `<span class="founder-tag">${asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업")} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
       const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${asset.ad.slogan}</span>` : "";
       const adImg = asset.ad && asset.ad.week === state.week && asset.ad.image ? `<img class="ad-thumb" alt="" src="${asset.ad.image}">` : "";
       const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${asset.opsNote}</span>` : "";
 
       return `
-        <article class="asset-row ${asset.playerCompany ? "is-player" : ""}" data-id="${asset.id}" style="--asset-color:${asset.color}">
+        <article class="asset-row ${asset.playerCompany ? "is-player" : "is-core"}" data-id="${asset.id}" style="--asset-color:${asset.color}">
           <div class="asset-name">
             <span class="asset-symbol">${asset.symbol}</span>
             <strong>${asset.name}</strong>
@@ -2832,8 +3066,9 @@
             <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
           </div>
           <div class="asset-price">
-            <strong>${money(asset.price)}</strong>
-            <span class="${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난주</span>
+            <strong class="asset-last">${money(asset.price)}</strong>
+            ${sparkSvg(asset, SPARK_W, SPARK_H)}
+            <span class="${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개</span>
             <span class="flow-pill ${flow.type}">${flow.text}</span>
           </div>
           <div class="asset-forecast">
@@ -2860,6 +3095,8 @@
         </article>
       `;
     }).join("");
+    renderLiveBoard();
+    updateLiveCharts();
   }
 
   function renderPortfolio() {
@@ -3929,9 +4166,11 @@
   });
 
   els.assetList.addEventListener("click", (event) => {
-    const button = event.target.closest("button");
     const row = event.target.closest(".asset-row");
-    if (!button || !row) return;
+    if (!row) return;
+    if (row.dataset.id) selectChart(row.dataset.id);
+    const button = event.target.closest("button");
+    if (!button) return;
     const action = button.dataset.action;
     const input = $("input", row);
     let qty = quantityFrom(row);
@@ -3941,6 +4180,12 @@
     if (action === "sell") sell(row.dataset.id, qty);
     if (action === "research") analyze(row.dataset.id);
   });
+  if (els.liveChartPills) {
+    els.liveChartPills.addEventListener("click", (event) => {
+      const pill = event.target.closest("[data-chart-id]");
+      if (pill) selectChart(pill.dataset.chartId);
+    });
+  }
 
   window.addEventListener("beforeunload", () => {
     if (state?.active) writeWallet();
