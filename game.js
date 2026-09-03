@@ -29,6 +29,7 @@
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
   const FIREBASE_READ_TIMEOUT_MS = 1800;
+  const FIREBASE_WRITE_TIMEOUT_MS = 4500;
   const TICK_MS = 1000;
   const TICK_CAP = 96;
   const LIVE_W = 640;
@@ -861,6 +862,24 @@
   function firebaseConfig() {
     const cfg = window.FIREBASE_CONFIG || DEFAULT_FIREBASE_CONFIG;
     return cfg.databaseURL && cfg.apiKey ? cfg : null;
+  }
+
+  function firebaseRestUrl(path) {
+    const cfg = firebaseConfig();
+    if (!cfg?.databaseURL) return "";
+    return `${cfg.databaseURL.replace(/\/$/, "")}/${String(path || "").replace(/^\/+/, "")}.json`;
+  }
+
+  async function firebaseRestRequest(path, options = {}, timeoutMs = FIREBASE_WRITE_TIMEOUT_MS) {
+    const url = firebaseRestUrl(path);
+    if (!url) throw new Error("firebase-rest-missing");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { cache: "no-store", ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function firebaseDb() {
@@ -1864,6 +1883,46 @@
     return { ok: true };
   }
 
+  function nextTradedAsset(source, fallback, side, qty) {
+    const asset = source && typeof source === "object"
+      ? JSON.parse(JSON.stringify(source))
+      : JSON.parse(JSON.stringify(publicAsset(fallback)));
+    const currentPrice = Number(asset.price);
+    if (!(currentPrice > 0)) return null;
+    const float = Math.max(40, Number(asset.float) || 400);
+    const impactK = asset.playerCompany ? 0.85 : 0.3;
+    const signedQty = side === "buy" ? qty : -qty;
+    const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * impactK));
+    asset.price = Math.max(5, round1(currentPrice * (1 + impact)));
+    asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
+    return { asset, fillPrice: currentPrice };
+  }
+
+  async function tradeAssetWithRest(assetId, side, qty, localAsset) {
+    const path = `${FIREBASE_WORLD_PATH}/assets/${safeFbKey(assetId)}`;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+      if (!read.ok) throw new Error(`firebase-rest-read-${read.status}`);
+      const etag = read.headers.get("ETag");
+      const traded = nextTradedAsset(await read.json(), localAsset, side, qty);
+      if (!traded) throw new Error("firebase-rest-invalid-asset");
+      if (side === "buy" && traded.fillPrice * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
+      if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return { ok: false, err: "qty" };
+      const headers = { "Content-Type": "application/json" };
+      if (etag) headers["If-Match"] = etag;
+      const write = await firebaseRestRequest(path, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(traded.asset),
+      });
+      if (write.status === 412) continue;
+      if (!write.ok) throw new Error(`firebase-rest-write-${write.status}`);
+      const saved = await write.json();
+      return { ok: true, asset: hydrateAsset(saved || traded.asset), fillPrice: traded.fillPrice };
+    }
+    throw new Error("firebase-rest-conflict");
+  }
+
   async function executeSharedTrade(assetId, side, qty) {
     qty = Math.floor(Number(qty) || 0);
     const localAsset = assetById(assetId);
@@ -1871,50 +1930,29 @@
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
     if (side === "buy" && localAsset.price * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
-
-    const db = firebaseDb();
-    if (!db || !worldSync.connected) return executeTrade(state.playerId, assetId, side, qty);
     if (worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
-    worldSync.pendingTrades.add(assetId);
-    let fillPrice = localAsset.price;
-    try {
-      const result = await db.ref(`${FIREBASE_WORLD_PATH}/assets/${safeFbKey(assetId)}`).transaction((remoteAsset) => {
-        const asset = remoteAsset && typeof remoteAsset === "object"
-          ? remoteAsset
-          : JSON.parse(JSON.stringify(publicAsset(localAsset)));
-        const currentPrice = Number(asset.price);
-        if (!(currentPrice > 0)) return;
-        if (side === "buy" && currentPrice * qty > state.cash + 1e-9) return;
-        if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return;
-        fillPrice = currentPrice;
-        const float = Math.max(40, Number(asset.float) || 400);
-        const impactK = asset.playerCompany ? 0.85 : 0.3;
-        const signedQty = side === "buy" ? qty : -qty;
-        const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * impactK));
-        asset.price = Math.max(5, round1(currentPrice * (1 + impact)));
-        asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
-        return asset;
-      }, undefined, false);
-      if (!result.committed) {
-        return { ok: false, err: side === "buy" ? "cash" : "qty" };
-      }
 
-      const committedAsset = hydrateAsset(result.snapshot.val());
+    worldSync.pendingTrades.add(assetId);
+    try {
+      const result = await tradeAssetWithRest(assetId, side, qty, localAsset);
+      if (!result.ok) return result;
+
       const asset = assetById(assetId);
-      Object.assign(asset, committedAsset);
+      Object.assign(asset, result.asset);
       pushTick(asset, asset.price);
       const holding = ensureHolding(state.holdings, assetId);
-      const total = round1(fillPrice * qty);
+      const total = round1(result.fillPrice * qty);
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
         state.cash = round1(state.cash - total);
       } else {
-        if (fillPrice > holding.avg) state.profitableSales += 1;
+        if (result.fillPrice > holding.avg) state.profitableSales += 1;
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
         if (holding.qty === 0) holding.avg = 0;
       }
+      worldSync.online = true;
       recordTrade(side, asset, qty, total);
       queuePush();
       return { ok: true };
@@ -2602,25 +2640,14 @@
 
   async function fetchWorld() {
     const db = firebaseDb();
-    const cfg = firebaseConfig();
-    const restUrl = cfg?.databaseURL
-      ? `${cfg.databaseURL.replace(/\/$/, "")}/${FIREBASE_WORLD_PATH}.json`
-      : "";
-
-    if (restUrl) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FIREBASE_READ_TIMEOUT_MS);
-      try {
-        const response = await fetch(restUrl, { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error(`firebase-rest-${response.status}`);
-        const world = worldFromFirebase(await response.json());
-        if (world) writeLocalWorld(world);
-        return world;
-      } catch {
-        /* fall through to the realtime SDK or local cache */
-      } finally {
-        clearTimeout(timer);
-      }
+    try {
+      const response = await firebaseRestRequest(FIREBASE_WORLD_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) throw new Error(`firebase-rest-${response.status}`);
+      const world = worldFromFirebase(await response.json());
+      if (world) writeLocalWorld(world);
+      return world;
+    } catch {
+      /* fall through to the realtime SDK or local cache */
     }
 
     if (!db) return readLocalWorld();
@@ -2640,10 +2667,28 @@
   async function putWorld(payload) {
     writeLocalWorld(payload);
     const db = firebaseDb();
-    if (!db) throw new Error("firebase-missing");
     const slim = slimWorldPayload(payload);
     const updates = JSON.parse(JSON.stringify(firebaseUpdatesFromPayload(slim)));
-    await db.ref(FIREBASE_WORLD_PATH).update(updates);
+    let saved = false;
+    if (db && worldSync.connected) {
+      try {
+        await Promise.race([
+          db.ref(FIREBASE_WORLD_PATH).update(updates),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("firebase-write-timeout")), FIREBASE_WRITE_TIMEOUT_MS)),
+        ]);
+        saved = true;
+      } catch {
+        saved = false;
+      }
+    }
+    if (!saved) {
+      const response = await firebaseRestRequest(FIREBASE_WORLD_PATH, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      if (!response.ok) throw new Error(`firebase-rest-write-${response.status}`);
+    }
     worldSync.revision = payload.revision;
     worldSync.updatedAt = payload.updatedAt;
     worldSync.needsSeed = false;
