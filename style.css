@@ -878,6 +878,71 @@ nav a[hidden] {
   border-color: var(--red);
 }
 
+.play-chip-row,
+.catch-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.play-chip,
+.catch-btn,
+.trace-cell {
+  min-width: 64px;
+  min-height: 48px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 16px;
+}
+
+.play-chip.is-on,
+.trace-cell.is-on {
+  background: var(--lime);
+}
+
+.catch-btn.is-ok {
+  background: #d9f3e6;
+  border-color: var(--green);
+  color: var(--green);
+  font-weight: 700;
+}
+
+.spot-grid,
+.trace-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.trace-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.spot-cell {
+  min-height: 48px;
+  cursor: pointer;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 18px;
+}
+
+.trace-empty {
+  min-height: 48px;
+  background: #f3f0e6;
+  border: 1px dashed var(--line);
+}
+
+.rank-list li.is-me b {
+  color: var(--red);
+}
+
 .play-score {
   margin: 10px 0 16px;
   font-family: "IBM Plex Mono", monospace;

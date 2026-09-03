@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260903">
 </head>
 <body>
   <header class="site-header">
@@ -33,7 +33,7 @@
         <h1>감 말고 <em>근거</em>로,<br>월급을 굴려라.</h1>
         <p>회사를 세우고 광고를 걸고, 서로의 주식에 투자하세요.<br>매수세가 가격을 밀고, 허풍 광고는 언젠가 대가를 치릅니다.</p>
         <div class="hero-actions">
-          <button class="cta-button" id="open-setup" type="button">투자 계좌 만들기 <span>↗</span></button>
+          <button class="cta-button" id="open-setup" type="button">투자 시작하기 <span>↗</span></button>
           <a href="#guide">게임 방식 보기</a>
         </div>
         <dl class="hero-stats">
@@ -82,7 +82,7 @@
         </div>
         <div class="game-head-actions">
           <span id="difficulty-label">연습생 모드</span>
-          <button id="restart-button" type="button">새 게임</button>
+          <button id="restart-button" type="button">투자 다시 시작</button>
         </div>
       </div>
 
@@ -193,8 +193,8 @@
 
           <div class="market-close">
             <div>
-              <span>교시가 끝나면 자동 정산됩니다</span>
-              <p id="close-market-hint">한국 표준시 기준으로 수업이 끝나는 시각에 가격이 반영됩니다.</p>
+              <span>교시가 끝나면 주가가 공개됩니다</span>
+              <p id="close-market-hint">09:20 등 교시 종료 시각에 가격 변동이 공개됩니다. 그 사이에는 계속 거래할 수 있습니다.</p>
             </div>
             <button class="ghost-button" id="close-market" type="button">강제 정산 (표준시가 안 맞을 때)</button>
           </div>
@@ -282,7 +282,7 @@
         <h2>운보다 판단이<br>중요한 이유.</h2>
       </div>
       <div class="guide-grid">
-        <article><span>01</span><i>勞動</i><h3>알바로 시드를 모으세요</h3><p>매주 에너지로 아르바이트를 뛰면 시드머니가 들어옵니다. 투자 전에 먼저 일하세요.</p></article>
+        <article><span>01</span><i>勞動</i><h3>알바로 시드를 모으세요</h3><p>매주 다른 알바와 미니게임이 뜹니다. 번 돈은 로그아웃해도 계좌에 남습니다.</p></article>
         <article><span>02</span><i>廣告</i><h3>광고는 힌트일 뿐입니다</h3><p>창업자가 돈을 들여 메시지를 냅니다. 관심은 모이지만, 허풍은 신뢰와 주가를 함께 깎습니다.</p></article>
         <article><span>03</span><i>需給</i><h3>사고팔면 가격이 움직입니다</h3><p>6개 기본 종목은 뉴스와 수급으로 움직입니다. 학생 회사는 그 위에 상장되고, 실제 매수·매도가 가격을 밀고 누릅니다.</p></article>
         <article><span>04</span><i>忍耐</i><h3>시즌은 반복됩니다</h3><p>12주가 끝나도 회사와 보유 자산은 남습니다. 현금도 포지션입니다.</p></article>
@@ -301,8 +301,8 @@
     <section class="setup-panel auth-panel" role="dialog" aria-modal="true" aria-labelledby="auth-title">
       <button class="modal-x" data-close="auth" type="button" aria-label="닫기">×</button>
       <span class="overline">MEMBER DESK</span>
-      <h2 id="auth-title">계좌 인증</h2>
-      <p>아이디는 시장에서 투자자 이름과 창업자 명의로 쓰입니다. 비밀번호는 이 브라우저에만 저장되며, 공유 시장에는 올라가지 않습니다.</p>
+      <h2 id="auth-title">로그인</h2>
+      <p id="auth-lead">이미 계좌가 있으면 로그인하세요. 처음이면 회원가입에서 투자 계좌가 만들어집니다.</p>
       <div class="auth-tabs">
         <button class="auth-tab active" type="button" data-auth="login">로그인</button>
         <button class="auth-tab" type="button" data-auth="register">회원가입</button>
@@ -321,24 +321,24 @@
     <div class="modal-backdrop" data-close="setup"></div>
     <section class="setup-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title">
       <button class="modal-x" data-close="setup" type="button" aria-label="닫기">×</button>
-      <span class="overline">OPEN YOUR ACCOUNT</span>
-      <h2 id="setup-title">투자 성향을 선택하세요</h2>
-      <p>시작 시드는 적습니다. 알바와 회사 운영으로 판돈을 키우세요.</p>
+      <span class="overline">START INVESTING</span>
+      <h2 id="setup-title">어떻게 투자할까요?</h2>
+      <p>계좌는 회원가입 때 이미 만들어져 있습니다. 아래에서 고르는 성향은 이번 투자의 에너지에만 영향을 주고, 모아 둔 돈은 그대로입니다.</p>
       <div class="difficulty-list">
         <button class="difficulty active" type="button" data-mode="rookie">
           <span class="difficulty-icon">🌱</span><b>연습생</b><small>처음이라면 추천</small>
-          <dl><div><dt>시작</dt><dd>800만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>4</dd></div></dl>
+          <dl><div><dt>신규 시드</dt><dd>800만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>4</dd></div></dl>
         </button>
         <button class="difficulty" type="button" data-mode="trader">
           <span class="difficulty-icon">📈</span><b>트레이더</b><small>균형 잡힌 도전</small>
-          <dl><div><dt>시작</dt><dd>650만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
+          <dl><div><dt>신규 시드</dt><dd>650만원</dd></div><div><dt>목표</dt><dd>1,800만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
         </button>
         <button class="difficulty" type="button" data-mode="wolf">
           <span class="difficulty-icon">🐺</span><b>여의도 늑대</b><small>실수는 곧 퇴장</small>
-          <dl><div><dt>시작</dt><dd>450만원</dd></div><div><dt>목표</dt><dd>2,000만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
+          <dl><div><dt>신규 시드</dt><dd>450만원</dd></div><div><dt>목표</dt><dd>2,000만원</dd></div><div><dt>에너지</dt><dd>3</dd></div></dl>
         </button>
       </div>
-      <button class="cta-button setup-start" id="start-game" type="button">시장 입장 <span>→</span></button>
+      <button class="cta-button setup-start" id="start-game" type="button">투자 시작 <span>→</span></button>
     </section>
   </div>
 
@@ -349,7 +349,7 @@
       <span class="overline">GLOBAL MARKET</span>
       <h2 id="lobby-title">전 세계 단일 시장</h2>
       <p id="lobby-user">로그인 후 시장에 입장하세요. 모든 학생이 같은 시장을 봅니다.</p>
-      <p class="lobby-note">방 코드는 없습니다. 다른 학생이 세운 회사와 광고가 같은 목록에 뜹니다.</p>
+      <p class="lobby-note">한빛테크 등 6종목은 항상 열려 있습니다. 여러분이 세운 회사는 그 옆에 추가되고, 번 돈은 로그인할 때마다 쌓입니다.</p>
       <button class="cta-button setup-start" id="lobby-enter" type="button">시장 입장 <span>→</span></button>
       <p class="lobby-status" id="lobby-status"></p>
       <p class="lobby-clock" id="lobby-clock"></p>
@@ -401,14 +401,14 @@
     <div class="modal-backdrop"></div>
     <section class="week-panel" role="dialog" aria-modal="true" aria-labelledby="week-result-title">
       <span class="overline" id="week-result-label">WEEK 01 CLOSED</span>
-      <h2 id="week-result-title">이번 주 시장 마감</h2>
+      <h2 id="week-result-title">이번 교시 주가 공개</h2>
       <p id="week-result-summary">뉴스가 시장에 반영되었습니다.</p>
       <div class="week-results" id="week-results"></div>
       <div class="week-account">
         <span>주간 평가 손익 <b id="week-profit">+0만원</b></span>
         <span>현재 총자산 <strong id="week-total">0만원</strong></span>
       </div>
-      <button class="cta-button" id="next-week" type="button">다음 주 뉴스 확인 <span>→</span></button>
+      <button class="cta-button" id="next-week" type="button">계속 투자하기 <span>→</span></button>
     </section>
   </div>
 
@@ -429,7 +429,7 @@
       </div>
       <div class="end-actions">
         <button class="cta-button" id="continue-season" type="button">다음 시즌 계속 <span>→</span></button>
-        <button class="ghost-button" id="play-again" type="button">새 계좌로 재도전</button>
+        <button class="ghost-button" id="play-again" type="button">투자 다시 시작</button>
       </div>
     </section>
   </div>
@@ -443,6 +443,6 @@
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="game.js"></script>
+  <script src="game.js?v=20260903"></script>
 </body>
 </html>

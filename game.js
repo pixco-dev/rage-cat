@@ -4,6 +4,7 @@
   const MAX_WEEKS = 12;
   const AUTH_STORE = "bull-lab-accounts-v1";
   const SESSION_STORE = "bull-lab-session-v1";
+  const WALLET_STORE = "bull-lab-wallets-v1";
   const AD_COST = 18;
   const MIN_SEED = 80;
   const WORLD_BLOB_ID = "b011ab00-7a6e-41ab-8c00-00b011ab0001";
@@ -261,6 +262,16 @@
     { id: "report", name: "야근 보고서", icon: "📝", pay: [22, 38], energy: 1, game: "typing", copy: "임원 보고 문장을 실수 없이 타이핑하세요." },
     { id: "cafe", name: "주말 카페", icon: "☕", pay: [12, 20], energy: 1, game: "timing", copy: "에스프레소 추출 타이밍이 시급을 바꿉니다." },
     { id: "warehouse", name: "물류 분류", icon: "📦", pay: [18, 30], energy: 1, game: "memory", copy: "박스 코드를 외워 올바른 벨트에 올리세요." },
+    { id: "tutor", name: "학원 조교", icon: "📐", pay: [18, 32], energy: 1, game: "math", copy: "학생 숙제 답을 암산으로 빠르게 확인하세요." },
+    { id: "library", name: "도서관 정리", icon: "📚", pay: [14, 24], energy: 1, game: "sort", copy: "청구기호 숫자를 작은 것부터 꽂으세요." },
+    { id: "flyer", name: "전단지 알바", icon: "📰", pay: [13, 22], energy: 1, game: "catch", copy: "초록 스티커가 붙은 집만 빠르게 찍으세요." },
+    { id: "parking", name: "주차 정산", icon: "🅿️", pay: [17, 28], energy: 1, game: "math", copy: "요금·거스름을 틀리면 시급이 깎입니다." },
+    { id: "cinema", name: "영화관 팝콘", icon: "🍿", pay: [15, 25], energy: 1, game: "timing", copy: "기름이 터지는 순간에 불을 끄세요." },
+    { id: "hotel", name: "객실 청소", icon: "🛏️", pay: [19, 31], energy: 1, game: "trace", copy: "체크리스트 번호 순서대로 방을 도세요." },
+    { id: "pets", name: "반려견 산책", icon: "🐕", pay: [14, 23], energy: 1, game: "catch", copy: "목줄이 초록일 때만 앞으로 나가세요." },
+    { id: "inspect", name: "부품 검수", icon: "🔍", pay: [21, 36], energy: 1, game: "spot", copy: "불량 하나만 골라내면 시급이 살아납니다." },
+    { id: "ticket", name: "고속버스 매표", icon: "🎫", pay: [16, 27], energy: 1, game: "typing", copy: "목적지와 좌석 번호를 그대로 입력하세요." },
+    { id: "stock", name: "편의점 발주", icon: "📋", pay: [15, 26], energy: 1, game: "sort", copy: "발주 코드를 오름차순으로 찍으세요." },
   ];
 
   const INTEL = [
@@ -276,6 +287,11 @@
     { id: "memo", name: "기억 카드", icon: "🧠", energy: 1, game: "memory", reward: "research", copy: "순서를 맞히면 리서치 포인트를 얻습니다." },
     { id: "quiz", name: "경제 상식 퀴즈", icon: "❓", energy: 1, game: "quiz", reward: "intel", copy: "금리·환율·밸류에이션 문항을 맞히면 약한 방향 힌트를 엽니다." },
     { id: "fact", name: "루머 vs 팩트", icon: "🕵️", energy: 1, game: "rumor", reward: "intel", copy: "그럴듯한 시장 주장의 진위를 가르면 핵심 힌트를 얻습니다." },
+    { id: "math", name: "암산 챌린지", icon: "🧮", energy: 1, game: "math", reward: "cash", copy: "거스름·퍼센트를 맞히면 용돈이 붙습니다." },
+    { id: "sort", name: "숫자 정렬", icon: "🔢", energy: 1, game: "sort", reward: "research", copy: "작은 수부터 누르면 리서치 포인트를 얻습니다." },
+    { id: "spot", name: "불량 찾기", icon: "👀", energy: 1, game: "spot", reward: "cash", copy: "다른 칸 하나를 찾아내면 용돈이 들어옵니다." },
+    { id: "catch", name: "초록만 클릭", icon: "🟢", energy: 1, game: "catch", reward: "cash", copy: "초록만 빠르게 누르세요. 다른 색은 감점입니다." },
+    { id: "trace", name: "순서 터치", icon: "1️⃣", energy: 1, game: "trace", reward: "research", copy: "번호 순서대로 칸을 밟으면 리서치를 얻습니다." },
   ];
 
   const TYPING_LINES = [
@@ -284,6 +300,11 @@
     "배송 완료. 다음 주소로 즉시 출발하세요.",
     "고객님, 대기 번호 47번입니다. 조금만 기다려 주세요.",
     "야근 수당은 적지만 시드머니는 쌓입니다.",
+    "서울고속 · 14:20 출발 · 4A 창측.",
+    "발주 코드 A-17, 우유 12, 삼각김밥 40.",
+    "현금 흐름이 막히면 이익도 숫자가 아닙니다.",
+    "분식 주문: 떡볶이 2, 김밥 1, 라볶이 덜맵게.",
+    "객실 1208 미니바 보충, 타월 교체 완료.",
   ];
 
   const QUIZ_BANK = [
@@ -605,6 +626,7 @@
     authError: $("#auth-error"),
     authSubmit: $("#auth-submit"),
     authTitle: $("#auth-title"),
+    authLead: $("#auth-lead"),
     lobbyModal: $("#lobby-modal"),
     lobbyUser: $("#lobby-user"),
     lobbyStatus: $("#lobby-status"),
@@ -847,6 +869,7 @@
       founded,
       total: player.id === state.playerId ? totalAssets() : (cash || 0) + holdingsValueOf(holdings),
       bot: false,
+      updatedAt: Date.now(),
     };
   }
 
@@ -863,6 +886,7 @@
         founded: row.founded || null,
         total: 0,
         bot: false,
+        updatedAt: row.updatedAt || 0,
       };
       const local = byId.get(row.id);
       if (local) Object.assign(local, next);
@@ -951,6 +975,7 @@
       analyzed: new Set(),
       intel: {},
       weekJobs: [],
+      weekPlays: [],
       jobsDone: new Set(),
       intelDone: new Set(),
       playDone: new Set(),
@@ -1012,14 +1037,108 @@
     return out;
   }
 
+  function randomBytes(n) {
+    const out = new Uint8Array(n);
+    if (globalThis.crypto?.getRandomValues) crypto.getRandomValues(out);
+    else for (let i = 0; i < n; i += 1) out[i] = Math.floor(Math.random() * 256);
+    return out;
+  }
+
+  function sha256Bytes(bytes) {
+    const rotr = (n, x) => (x >>> n) | (x << (32 - n));
+    const K = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+    let h0 = 0x6a09e667;
+    let h1 = 0xbb67ae85;
+    let h2 = 0x3c6ef372;
+    let h3 = 0xa54ff53a;
+    let h4 = 0x510e527f;
+    let h5 = 0x9b05688c;
+    let h6 = 0x1f83d9ab;
+    let h7 = 0x5be0cd19;
+    const bitLen = bytes.length * 8;
+    const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    view.setUint32(padded.length - 4, bitLen, false);
+    const w = new Uint32Array(64);
+    for (let i = 0; i < padded.length; i += 64) {
+      for (let t = 0; t < 16; t += 1) w[t] = view.getUint32(i + t * 4, false);
+      for (let t = 16; t < 64; t += 1) {
+        const s0 = rotr(7, w[t - 15]) ^ rotr(18, w[t - 15]) ^ (w[t - 15] >>> 3);
+        const s1 = rotr(17, w[t - 2]) ^ rotr(19, w[t - 2]) ^ (w[t - 2] >>> 10);
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) >>> 0;
+      }
+      let a = h0;
+      let b = h1;
+      let c = h2;
+      let d = h3;
+      let e = h4;
+      let f = h5;
+      let g = h6;
+      let h = h7;
+      for (let t = 0; t < 64; t += 1) {
+        const S1 = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (h + S1 + ch + K[t] + w[t]) >>> 0;
+        const S0 = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (S0 + maj) >>> 0;
+        h = g;
+        g = f;
+        f = e;
+        e = (d + temp1) >>> 0;
+        d = c;
+        c = b;
+        b = a;
+        a = (temp1 + temp2) >>> 0;
+      }
+      h0 = (h0 + a) >>> 0;
+      h1 = (h1 + b) >>> 0;
+      h2 = (h2 + c) >>> 0;
+      h3 = (h3 + d) >>> 0;
+      h4 = (h4 + e) >>> 0;
+      h5 = (h5 + f) >>> 0;
+      h6 = (h6 + g) >>> 0;
+      h7 = (h7 + h) >>> 0;
+    }
+    const out = new Uint8Array(32);
+    const outView = new DataView(out.buffer);
+    outView.setUint32(0, h0);
+    outView.setUint32(4, h1);
+    outView.setUint32(8, h2);
+    outView.setUint32(12, h3);
+    outView.setUint32(16, h4);
+    outView.setUint32(20, h5);
+    outView.setUint32(24, h6);
+    outView.setUint32(28, h7);
+    return out;
+  }
+
+  async function sha256Digest(data) {
+    if (globalThis.crypto?.subtle) {
+      return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+    }
+    return sha256Bytes(data);
+  }
+
   async function hashPassword(password, saltHex) {
     const enc = new TextEncoder();
-    const salt = saltHex ? hexToBuf(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+    const salt = saltHex ? hexToBuf(saltHex) : randomBytes(16);
     const pass = enc.encode(password);
     const data = new Uint8Array(salt.length + pass.length);
     data.set(salt);
     data.set(pass, salt.length);
-    const digest = await crypto.subtle.digest("SHA-256", data);
+    const digest = await sha256Digest(data);
     return { hash: bufToHex(digest), salt: bufToHex(salt) };
   }
 
@@ -1064,8 +1183,13 @@
   function setAuthMode(mode) {
     authMode = mode;
     $$(".auth-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.auth === mode));
-    els.authTitle.textContent = mode === "login" ? "로그인" : "회원가입";
-    els.authSubmit.innerHTML = mode === "login" ? `로그인 <span>→</span>` : `가입하고 입장 <span>→</span>`;
+    els.authTitle.textContent = mode === "login" ? "로그인" : "계좌 만들기";
+    els.authSubmit.innerHTML = mode === "login" ? `로그인 <span>→</span>` : `계좌 만들기 <span>→</span>`;
+    if (els.authLead) {
+      els.authLead.textContent = mode === "login"
+        ? "이미 계좌가 있으면 로그인하세요. 처음이면 회원가입에서 투자 계좌가 만들어집니다."
+        : "회원가입하면 투자 계좌가 개설됩니다. 아이디는 시장에서 투자자 이름과 창업자 명의로 쓰입니다.";
+    }
     els.authNickWrap.hidden = mode === "login";
     els.authPass.autocomplete = mode === "login" ? "current-password" : "new-password";
     els.authError.hidden = true;
@@ -1099,6 +1223,7 @@
       accounts[id] = { id, nick, salt: hashed.salt, hash: hashed.hash, created: Date.now() };
       writeAccounts(accounts);
       writeSession({ id, nick });
+      seedNewWallet(id);
     } else {
       const row = accounts[id];
       if (!row) {
@@ -1114,12 +1239,15 @@
     }
     els.authPass.value = "";
     closeModal(els.authModal);
-    toast("🪪", "로그인", `${session.nick} 님, 데스크에 오신 것을 환영합니다.`);
+    toast("🪪", authMode === "register" ? "계좌 개설" : "로그인", authMode === "register"
+      ? `${session.nick} 님, 투자 계좌가 만들어졌습니다.`
+      : `${session.nick} 님, 다시 오신 것을 환영합니다.`);
     if (authNext === "setup") openModal(els.setupModal);
     authNext = "setup";
   }
 
   function logout() {
+    if (state?.active) writeWallet();
     writeSession(null);
     destroyNet();
     if (state?.active) {
@@ -1186,12 +1314,119 @@
       founded: state.founded,
       total: totalAssets(),
       bot: false,
+      updatedAt: Date.now(),
     };
     if (existing) Object.assign(existing, snapshot);
     else state.players.unshift(snapshot);
     state.players.forEach((player) => {
       player.total = playerTotal(player);
     });
+    writeWallet();
+  }
+
+  function readWallets() {
+    try {
+      return JSON.parse(localStorage.getItem(WALLET_STORE) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function readWallet(id) {
+    if (!id) return null;
+    return readWallets()[id] || null;
+  }
+
+  function writeWallet() {
+    if (!session?.id || !state?.active) return;
+    try {
+      const all = readWallets();
+      all[session.id] = {
+        cash: state.cash,
+        holdings: cloneHoldings(state.holdings),
+        founded: state.founded,
+        laborIncome: state.laborIncome,
+        initialCash: state.initialCash,
+        modeKey: state.modeKey,
+        research: state.research,
+        missions: [...state.missions],
+        badges: [...state.badges],
+        trades: state.trades,
+        analyses: state.analyses,
+        jobsCount: state.jobsCount,
+        intelCount: state.intelCount,
+        playCount: state.playCount,
+        profitableSales: state.profitableSales,
+        cashSafeWeeks: state.cashSafeWeeks,
+        updatedAt: Date.now(),
+      };
+      localStorage.setItem(WALLET_STORE, JSON.stringify(all));
+    } catch {
+      /* quota */
+    }
+  }
+
+  function applyWallet(row) {
+    if (!row) return false;
+    if (Number.isFinite(Number(row.cash))) state.cash = Number(row.cash);
+    if (row.holdings) {
+      state.holdings = cloneHoldings(row.holdings);
+      (state.assets || []).forEach((asset) => ensureHolding(state.holdings, asset.id));
+    }
+    if (row.founded) state.founded = row.founded;
+    if (Number.isFinite(row.laborIncome)) state.laborIncome = row.laborIncome;
+    if (Number.isFinite(row.initialCash)) state.initialCash = row.initialCash;
+    if (Number.isFinite(row.research)) state.research = row.research;
+    if (Number.isFinite(row.trades)) state.trades = row.trades;
+    if (Number.isFinite(row.analyses)) state.analyses = row.analyses;
+    if (Number.isFinite(row.jobsCount)) state.jobsCount = row.jobsCount;
+    if (Number.isFinite(row.intelCount)) state.intelCount = row.intelCount;
+    if (Number.isFinite(row.playCount)) state.playCount = row.playCount;
+    if (Number.isFinite(row.profitableSales)) state.profitableSales = row.profitableSales;
+    if (Number.isFinite(row.cashSafeWeeks)) state.cashSafeWeeks = row.cashSafeWeeks;
+    if (Array.isArray(row.missions)) state.missions = new Set(row.missions);
+    if (Array.isArray(row.badges)) state.badges = new Set(row.badges);
+    return true;
+  }
+
+  function seedNewWallet(id) {
+    if (!id || readWallet(id)) return;
+    try {
+      const all = readWallets();
+      const cash = MODES.rookie.cash;
+      all[id] = {
+        cash,
+        holdings: {},
+        founded: null,
+        laborIncome: 0,
+        initialCash: cash,
+        modeKey: "rookie",
+        research: MODES.rookie.research,
+        missions: [],
+        badges: [],
+        trades: 0,
+        analyses: 0,
+        jobsCount: 0,
+        intelCount: 0,
+        playCount: 0,
+        profitableSales: 0,
+        cashSafeWeeks: 0,
+        updatedAt: Date.now(),
+      };
+      localStorage.setItem(WALLET_STORE, JSON.stringify(all));
+    } catch {
+      /* quota */
+    }
+  }
+
+  function restoreAccountWealth(remote) {
+    const worldRow = (remote?.players || []).find((item) => item.id === state.playerId);
+    const localRow = readWallet(state.playerId);
+    const worldAt = worldRow?.updatedAt || 0;
+    const localAt = localRow?.updatedAt || 0;
+    const chosen = localRow && localAt >= worldAt ? localRow : (worldRow || localRow);
+    if (chosen) applyWallet(chosen);
+    syncLocalPlayer();
   }
 
   function applyFlow(asset, signedQty) {
@@ -1618,11 +1853,10 @@
 
   function clockLabel() {
     if (!kstClock.ok || !kstClock.parts) {
-      return { line: "한국 표준시 확인 중", hint: "수업 종료 시각은 표준시 서버를 기준으로 합니다.", open: false };
+      return { line: "한국 표준시 확인 중", hint: "교시가 끝나는 시각에 주가 변동이 공개됩니다. 그 사이에는 계속 거래할 수 있습니다.", open: true };
     }
     const parts = kstClock.parts;
     const next = nextSettlement(parts);
-    const open = isMarketOpen(parts);
     const targetMin = minutesOf(next.slot.h, next.slot.m);
     const nowMin = minutesOf(parts.h, parts.mi) + parts.s / 60;
     let remain = targetMin - nowMin;
@@ -1639,16 +1873,10 @@
     const mm = mins % 60;
     const count = hh > 0 ? `${hh}시간 ${mm}분` : `${mm}분`;
     const kst = `KST ${String(parts.h).padStart(2, "0")}:${String(parts.mi).padStart(2, "0")}`;
-    if (!open) {
-      return {
-        line: `장 마감 (수업 시간 외) · ${kst}`,
-        hint: `다음 정산 ${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}까지 ${count}`,
-        open: false,
-      };
-    }
+    const slot = `${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}`;
     return {
-      line: `${kst} · 다음 정산 ${next.slot.label} ${String(next.slot.h).padStart(2, "0")}:${String(next.slot.m).padStart(2, "0")}까지 ${count}`,
-      hint: "한국 표준시로 교시가 끝나는 시각에 전 세계 시장이 한 번 정산됩니다.",
+      line: `${kst} · 다음 주가 공개 ${slot}까지 ${count}`,
+      hint: "09:20 등 교시 종료 시각에 뉴스·수급이 가격으로 공개됩니다. 그 외 시간에도 사고팔 수 있습니다.",
       open: true,
     };
   }
@@ -2062,7 +2290,7 @@
 
   function renderClock() {
     const info = clockLabel();
-    if (state) state.sessionOpen = info.open;
+    if (state) state.sessionOpen = true;
     if (els.periodClock) els.periodClock.textContent = info.line;
     if (els.closeMarketHint) els.closeMarketHint.textContent = info.hint;
     if (els.lobbyClock) els.lobbyClock.textContent = info.line;
@@ -2093,25 +2321,24 @@
   }
 
   async function enterGlobalMarket() {
-    if (els.lobbyStatus) els.lobbyStatus.textContent = "한국 표준시와 공유 시장을 불러오는 중…";
+    if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중…";
     await refreshKst();
     if (!kstClock.ok) {
-      if (els.lobbyStatus) els.lobbyStatus.textContent = "표준시 서버에 닿지 못했습니다. 다시 시도하세요.";
-      toast("⏰", "표준시 필요", "장치 시간이 아니라 한국 표준시 서버에 연결해야 교시 정산을 합니다.");
-      return;
+      if (els.lobbyStatus) els.lobbyStatus.textContent = "표준시 없이 입장합니다. 거래는 가능하고, 주가 공개는 표준시에 연결되면 따라갑니다.";
+      toast("⏰", "표준시 대기", "지금은 바로 투자할 수 있습니다. 09:20 등 주가 공개만 표준시가 필요합니다.");
     }
+    let remote = null;
     try {
-      const remote = await fetchWorld();
+      remote = await fetchWorld();
       if (remote) mergeWorld(remote, { preferLocal: false });
-      else worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
     } catch {
-      worldSync.lastSettledPeriodId = worldSync.lastSettledPeriodId || lastEndedPeriodId(kstClock.parts);
+      remote = null;
     }
-    if (!worldSync.botsSpawned && !state.players.some((item) => item.bot)) {
-      spawnBots(4);
-      worldSync.botsSpawned = true;
+    restoreAccountWealth(remote);
+    purgeBots();
+    if (kstClock.ok && kstClock.parts) {
+      if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
     }
-    if (!worldSync.lastSettledPeriodId) worldSync.lastSettledPeriodId = lastEndedPeriodId(kstClock.parts);
     if (worldSync.eventDeck?.length) {
       state.eventDeck = worldSync.eventDeck.map((i) => EVENTS[i] || EVENTS[0]);
       state.event = hydrateEvent(worldSync.eventDeck[state.week - 1], state.event);
@@ -2120,7 +2347,7 @@
     beginLocalGame();
     startWorldLoop();
     queuePush();
-    toast("🌐", "단일 시장", "솔로·멀티 없이 같은 시장입니다. 교시가 끝나면 함께 정산됩니다.");
+    toast("🌐", "투자 시작", "같은 시장입니다. 교시가 끝나면 주가 변동이 공개되고, 그 사이에는 계속 거래할 수 있습니다.");
   }
 
   function compressAdImage(file) {
@@ -2232,7 +2459,10 @@
     window.removeEventListener("focus", onWorldFocus);
   }
 
-  function sendWallet() {}
+  function sendWallet() {
+    writeWallet();
+    if (state?.active) queuePush();
+  }
 
   function broadcastState() {
     queuePush();
@@ -2289,11 +2519,6 @@
 
   function submitFound(event) {
     event.preventDefault();
-    if (!state.sessionOpen) {
-      els.foundError.hidden = false;
-      els.foundError.textContent = "수업 시간 외에는 상장할 수 없습니다.";
-      return;
-    }
     const spec = {
       ownerId: state.playerId,
       ownerName: state.playerName,
@@ -2322,11 +2547,6 @@
 
   async function submitAd(event) {
     event.preventDefault();
-    if (!state.sessionOpen) {
-      els.adError.hidden = false;
-      els.adError.textContent = "수업 시간 외에는 광고를 올릴 수 없습니다.";
-      return;
-    }
     let image = pendingAdImage;
     if (els.adImage?.files?.[0]) {
       try {
@@ -2353,25 +2573,34 @@
     renderAll();
   }
 
-  function renderRoom() {
-    if (!els.roomCodeLabel) return;
-    els.roomCodeLabel.textContent = "전 세계 단일 시장";
-    const people = [];
-    const seen = new Map();
-    (worldSync.seenPlayers || []).forEach((item) => {
-      if (item?.id) seen.set(item.id, item);
-    });
-    (state.players || []).forEach((player) => {
-      if (!seen.has(player.id)) seen.set(player.id, player);
-    });
-    seen.forEach((player) => people.push(player));
-    els.playerList.innerHTML = people.map((player) => {
-      const company = player.founded?.symbol || state.assets.find((asset) => asset.founderId === player.id)?.symbol || (player.bot ? "봇" : "미상장");
-      const tag = player.bot ? `<span class="bot-tag">봇</span>` : (player.id === state.playerId ? `<span class="bot-tag">나</span>` : "");
-      return `<li><b>${player.name || player.id}${tag}</b><small>${company}${player.lastSeen ? ` · ${player.lastSeen}` : ""}</small></li>`;
+  function renderRanking() {
+    const top = humansRanked().slice(0, 5);
+    const rows = top.map((player, index) => {
+      const me = player.id === state.playerId;
+      const firm = player.founded?.symbol || "";
+      return `
+        <li class="${me ? "is-me" : ""}">
+          <span class="rank-n">${index + 1}</span>
+          <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b>
+          <small>${firm ? `${esc(firm)} · ` : ""}${money(player.total || 0)}</small>
+        </li>`;
     }).join("");
+    if (els.rankStrip) {
+      els.rankStrip.innerHTML = top.map((player, index) => {
+        const me = player.id === state.playerId;
+        return `<li><b>${index + 1} ${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b><small>${money(player.total || 0)}</small></li>`;
+      }).join("");
+    }
+    if (els.rankList) {
+      els.rankList.innerHTML = top.length ? rows : `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
+    }
+  }
+
+  function renderRoom() {
+    if (els.roomCodeLabel) els.roomCodeLabel.textContent = "전 세계 단일 시장";
+    renderRanking();
     renderClock();
-    const closed = !state.active || state.locked || !state.sessionOpen;
+    const closed = !state.active || state.locked;
     if (els.closeMarket) els.closeMarket.disabled = !state.active || state.locked;
     if (els.foundButton) els.foundButton.disabled = closed || !!state.founded;
     if (els.adButton) els.adButton.disabled = closed || !state.founded || state.adDone;
@@ -2407,7 +2636,8 @@
     state.intelDone = new Set();
     state.playDone = new Set();
     state.energy = state.energyMax;
-    state.weekJobs = shuffled(JOBS).slice(0, 3);
+    state.weekJobs = shuffled(JOBS).slice(0, 4);
+    state.weekPlays = shuffled(PLAYS).slice(0, 5);
     state.adDone = false;
     state.locked = false;
   }
@@ -2415,6 +2645,8 @@
   function beginLocalGame() {
     state.playMode = "global";
     state.roomCode = "GLOBAL";
+    state.active = true;
+    state.locked = false;
     syncLocalPlayer();
     if (!state.event) prepareWeek();
     else {
@@ -2568,7 +2800,7 @@
       const holding = ensureHolding(state.holdings, asset.id);
       const forecast = forecastFor(asset);
       const maxBuy = Math.floor(state.cash / asset.price);
-      const disabled = !state.active || state.locked || !state.sessionOpen;
+      const disabled = !state.active || state.locked;
       const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
       const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
       const flow = flowHint(asset);
@@ -2747,8 +2979,8 @@
   }
 
   function buy(id, qty) {
-    if (!state.active || state.locked || !state.sessionOpen) {
-      toast("⚠️", "주문 실패", state.sessionOpen ? "장이 열려 있는지 확인하세요." : "수업 시간 외에는 거래할 수 없습니다.");
+    if (!state.active || state.locked) {
+      toast("⚠️", "주문 실패", "주가 공개 안내를 닫은 뒤 다시 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
@@ -2760,8 +2992,8 @@
   }
 
   function sell(id, qty) {
-    if (!state.active || state.locked || !state.sessionOpen) {
-      toast("⚠️", "주문 실패", state.sessionOpen ? "장이 열려 있는지 확인하세요." : "수업 시간 외에는 거래할 수 없습니다.");
+    if (!state.active || state.locked) {
+      toast("⚠️", "주문 실패", "주가 공개 안내를 닫은 뒤 다시 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
@@ -2903,7 +3135,7 @@
       `;
     }).join("");
 
-    els.playPanel.innerHTML = PLAYS.map((item) => {
+    els.playPanel.innerHTML = (state.weekPlays || PLAYS).map((item) => {
       const done = state.playDone.has(item.id);
       const disabled = busy || done || state.energy < item.energy;
       return `
@@ -2953,6 +3185,11 @@
     if (spec.game === "memory") renderMemory(spec);
     if (spec.game === "quiz") renderQuiz(spec);
     if (spec.game === "rumor") renderRumor(spec);
+    if (spec.game === "math") renderMath(spec);
+    if (spec.game === "sort") renderSort(spec);
+    if (spec.game === "spot") renderSpot(spec);
+    if (spec.game === "catch") renderCatch(spec);
+    if (spec.game === "trace") renderTrace(spec);
     openModal(els.activityModal);
   }
 
@@ -3103,6 +3340,162 @@
     });
   }
 
+  function renderMath(spec) {
+    const kind = Math.floor(random() * 3);
+    let question;
+    let answer;
+    if (kind === 0) {
+      const a = 20 + Math.floor(random() * 80);
+      const b = 10 + Math.floor(random() * 40);
+      question = `${a} + ${b} = ?`;
+      answer = a + b;
+    } else if (kind === 1) {
+      const a = 50 + Math.floor(random() * 80);
+      const b = 8 + Math.floor(random() * 30);
+      question = `${a} − ${b} = ?`;
+      answer = a - b;
+    } else {
+      const base = [80, 100, 120, 160, 200][Math.floor(random() * 5)];
+      const pct = [5, 10, 15, 20, 25][Math.floor(random() * 5)];
+      question = `${base}의 ${pct}%는?`;
+      answer = Math.round((base * pct) / 100);
+    }
+    const opts = new Set([answer]);
+    while (opts.size < 4) {
+      const delta = (Math.floor(random() * 17) - 8) || 6;
+      opts.add(answer + delta);
+    }
+    els.playStage.innerHTML = `
+      <span class="overline">MINI GAME</span>
+      <h2 id="play-title">${spec.title}</h2>
+      <p class="play-copy">${spec.copy}</p>
+      <p class="play-prompt">${question}</p>
+      <div class="quiz-options">${shuffled([...opts]).map((value) => `<button type="button" data-v="${value}">${value}</button>`).join("")}</div>
+    `;
+    $$(".quiz-options button", els.playStage).forEach((button) => {
+      button.addEventListener("click", () => {
+        finishMiniGame(Number(button.dataset.v) === answer ? 1 : 0.12);
+      });
+    });
+  }
+
+  function renderSort(spec) {
+    const nums = [];
+    while (nums.length < 4) {
+      const n = 10 + Math.floor(random() * 90);
+      if (!nums.includes(n)) nums.push(n);
+    }
+    const order = [...nums].sort((a, b) => a - b);
+    const picked = [];
+    els.playStage.innerHTML = `
+      <span class="overline">MINI GAME</span>
+      <h2 id="play-title">${spec.title}</h2>
+      <p class="play-copy">${spec.copy}</p>
+      <p class="play-score" id="sort-status">작은 수부터 누르세요</p>
+      <div class="play-chip-row" id="sort-row">${shuffled(nums).map((n) => `<button type="button" class="play-chip" data-n="${n}">${n}</button>`).join("")}</div>
+    `;
+    $$(".play-chip", els.playStage).forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const n = Number(button.dataset.n);
+        if (n !== order[picked.length]) {
+          finishMiniGame(picked.length / order.length);
+          return;
+        }
+        picked.push(n);
+        button.disabled = true;
+        button.classList.add("is-on");
+        if (picked.length === order.length) finishMiniGame(1);
+        else $("#sort-status").textContent = `다음: ${order[picked.length]} 근처`;
+      });
+    });
+  }
+
+  function renderSpot(spec) {
+    const pairs = [["O", "0"], ["I", "l"], ["8", "B"], ["ㅡ", "—"], ["6", "9"]];
+    const pair = pairs[Math.floor(random() * pairs.length)];
+    const common = pair[0];
+    const odd = pair[1];
+    const oddAt = Math.floor(random() * 16);
+    els.playStage.innerHTML = `
+      <span class="overline">MINI GAME</span>
+      <h2 id="play-title">${spec.title}</h2>
+      <p class="play-copy">${spec.copy}</p>
+      <div class="spot-grid">${Array.from({ length: 16 }, (_, i) => `<button type="button" class="spot-cell" data-odd="${i === oddAt ? "1" : "0"}">${i === oddAt ? odd : common}</button>`).join("")}</div>
+    `;
+    $$(".spot-cell", els.playStage).forEach((button) => {
+      button.addEventListener("click", () => {
+        finishMiniGame(button.dataset.odd === "1" ? 1 : 0.1);
+      });
+    });
+  }
+
+  function renderCatch(spec) {
+    let round = 0;
+    let hits = 0;
+    function roundView() {
+      const ok = Math.floor(random() * 4);
+      els.playStage.innerHTML = `
+        <span class="overline">MINI GAME</span>
+        <h2 id="play-title">${spec.title}</h2>
+        <p class="play-copy">${spec.copy} (${round + 1}/3)</p>
+        <div class="catch-row">${Array.from({ length: 4 }, (_, i) => `<button type="button" class="catch-btn ${i === ok ? "is-ok" : ""}" data-ok="${i === ok ? "1" : "0"}">${i === ok ? "GO" : "—"}</button>`).join("")}</div>
+        <p class="play-score" id="catch-timer">1.2초</p>
+      `;
+      let done = false;
+      const timer = setTimeout(() => finishRound(false), 1200);
+      function finishRound(hit) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (hit) hits += 1;
+        round += 1;
+        if (round >= 3) finishMiniGame(hits / 3);
+        else roundView();
+      }
+      $$(".catch-btn", els.playStage).forEach((button) => {
+        button.addEventListener("click", () => {
+          if (done) return;
+          finishRound(button.dataset.ok === "1");
+        });
+      });
+    }
+    roundView();
+  }
+
+  function renderTrace(spec) {
+    const count = 6;
+    const slots = shuffled(Array.from({ length: 9 }, (_, i) => i));
+    const map = {};
+    for (let n = 1; n <= count; n += 1) map[slots[n - 1]] = n;
+    let expect = 1;
+    let ok = 0;
+    els.playStage.innerHTML = `
+      <span class="overline">MINI GAME</span>
+      <h2 id="play-title">${spec.title}</h2>
+      <p class="play-copy">${spec.copy}</p>
+      <div class="trace-grid">${Array.from({ length: 9 }, (_, i) => {
+        const n = map[i];
+        return n ? `<button type="button" class="trace-cell" data-n="${n}">${n}</button>` : `<span class="trace-empty"></span>`;
+      }).join("")}</div>
+    `;
+    $$(".trace-cell", els.playStage).forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const n = Number(button.dataset.n);
+        if (n !== expect) {
+          finishMiniGame(ok / count);
+          return;
+        }
+        button.disabled = true;
+        button.classList.add("is-on");
+        ok += 1;
+        expect += 1;
+        if (expect > count) finishMiniGame(1);
+      });
+    });
+  }
+
   const quizSeen = new Set();
   const rumorSeen = new Set();
 
@@ -3177,7 +3570,7 @@
   function showWeekResult(weekProfit, total, dividend) {
     els.weekResultLabel.textContent = `S${state.season} · WEEK ${String(state.week).padStart(2, "0")} CLOSED`;
     if (els.weekResultTitle) {
-      els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 폐장` : "이번 주 시장 마감";
+      els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 주가 공개` : "이번 교시 주가 공개";
     }
     els.weekSummary.textContent = dividend > 0
       ? `시장 변동과 함께 ${money(dividend)}의 분기 배당이 반영되었습니다.`
@@ -3197,7 +3590,7 @@
     els.weekTotal.textContent = money(total);
     state.seasonBreak = state.week >= MAX_WEEKS;
     state.terminal = false;
-    els.nextWeek.innerHTML = state.seasonBreak ? `다음 시즌 개장 <span>→</span>` : `다음 주 뉴스 확인 <span>→</span>`;
+    els.nextWeek.innerHTML = state.seasonBreak ? `다음 시즌 투자 <span>→</span>` : `계속 투자하기 <span>→</span>`;
     openModal(els.weekModal);
     tone(weekProfit >= 0 ? 620 : 170, .14, weekProfit >= 0 ? "square" : "sawtooth");
   }
@@ -3231,6 +3624,7 @@
   }
 
   function finishGame() {
+    writeWallet();
     state.active = false;
     state.locked = true;
     const total = totalAssets();
@@ -3243,7 +3637,7 @@
     els.endTitle.textContent = success ? "목표 달성!" : "시장은 만만치 않았다";
     els.endDescription.textContent = success
       ? "뉴스와 숫자를 읽은 선택이 결과를 만들었습니다."
-      : "목표에는 못 미쳤지만 다음 계좌에는 경험이 남습니다.";
+      : "목표에는 못 미쳤지만 다음 투자에는 경험이 남습니다.";
     els.endAssets.textContent = money(total);
     els.endReturn.textContent = percent(rate);
     els.endReturn.style.color = rate >= 0 ? "var(--red)" : "var(--green)";
@@ -3271,20 +3665,40 @@
     state = createState(selectedMode, true);
     state.playerId = session.id;
     state.playerName = session.nick;
+    applyWallet(readWallet(session.id));
     syncLocalPlayer();
   }
 
-  function startGame() {
-    if (!requireSession()) return;
+  function ensureGuestSession() {
+    if (session) return;
+    const id = makeId("guest");
+    writeSession({ id, nick: "게스트", guest: true });
+    seedNewWallet(id);
+  }
+
+  function startPlaying() {
+    ensureGuestSession();
+    closeModal(els.authModal);
     closeModal(els.setupModal);
     closeModal(els.endModal);
-    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 전 세계 단일 시장에 입장합니다.`;
-    if (els.lobbyStatus) els.lobbyStatus.textContent = "";
-    refreshKst().then(() => renderClock());
+    if (els.lobbyUser) els.lobbyUser.textContent = `${session.nick} 님, 시장에 들어가는 중…`;
+    if (els.lobbyStatus) els.lobbyStatus.textContent = "잠시만요.";
     openModal(els.lobbyModal);
+    bootRun();
+    return enterGlobalMarket().catch((err) => {
+      console.error(err);
+      closeModal(els.lobbyModal);
+      revealDesk();
+      toast("⚠️", "공유 시장 지연", "일단 로컬에서 거래를 시작합니다.");
+    });
+  }
+
+  function startGame() {
+    startPlaying();
   }
 
   function openModal(modal) {
+    if (!modal) return;
     modal.hidden = false;
     document.body.classList.add("modal-open");
     requestAnimationFrame(() => $("button", modal)?.focus());
@@ -3351,15 +3765,14 @@
     els.bestRecord.textContent = percent(rate);
   }
 
-  els.openSetup.addEventListener("click", () => {
+  els.openSetup?.addEventListener("click", () => {
+    startPlaying();
+  });
+  els.restart?.addEventListener("click", () => {
     if (!requireSession()) return;
     openModal(els.setupModal);
   });
-  els.restart.addEventListener("click", () => {
-    if (!requireSession()) return;
-    openModal(els.setupModal);
-  });
-  els.playAgain.addEventListener("click", () => {
+  els.playAgain?.addEventListener("click", () => {
     closeModal(els.endModal);
     if (!requireSession()) return;
     openModal(els.setupModal);
@@ -3377,7 +3790,7 @@
       els.difficulties.forEach((item) => item.classList.toggle("active", item === button));
     });
   });
-  els.start.addEventListener("click", startGame);
+  els.start?.addEventListener("click", startGame);
   $$("[data-close='setup']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.setupModal));
   });
@@ -3393,20 +3806,20 @@
   $$("[data-close='ad']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.adModal));
   });
-  els.nextWeek.addEventListener("click", nextWeek);
-  els.closeMarket.addEventListener("click", closeMarket);
-  els.clearLog.addEventListener("click", () => {
+  els.nextWeek?.addEventListener("click", nextWeek);
+  els.closeMarket?.addEventListener("click", closeMarket);
+  els.clearLog?.addEventListener("click", () => {
     state.log = [];
     renderLog();
   });
-  els.sound.addEventListener("click", () => {
+  els.sound?.addEventListener("click", () => {
     soundOn = !soundOn;
     els.sound.classList.toggle("muted", !soundOn);
     els.sound.textContent = soundOn ? "◖))" : "×";
     els.sound.setAttribute("aria-label", soundOn ? "효과음 끄기" : "효과음 켜기");
     if (soundOn) tone(520, .07);
   });
-  els.accountButton.addEventListener("click", () => {
+  els.accountButton?.addEventListener("click", () => {
     if (session) logout();
     else {
       authNext = null;
@@ -3417,19 +3830,22 @@
   $$(".auth-tab").forEach((tab) => {
     tab.addEventListener("click", () => setAuthMode(tab.dataset.auth));
   });
-  els.authForm.addEventListener("submit", (event) => {
+  els.authForm?.addEventListener("submit", (event) => {
     submitAuth(event).catch(() => showAuthError("인증에 실패했습니다."));
   });
-  els.lobbyEnter.addEventListener("click", () => {
+  els.lobbyEnter?.addEventListener("click", () => {
     if (!requireSession()) return;
     bootRun();
-    enterGlobalMarket();
+    enterGlobalMarket().catch((err) => {
+      console.error(err);
+      toast("⚠️", "입장 실패", "한 번 더 눌러 주세요.");
+    });
   });
-  els.foundButton.addEventListener("click", openFoundModal);
-  els.adButton.addEventListener("click", openAdModal);
-  els.foundForm.addEventListener("submit", submitFound);
-  els.adForm.addEventListener("submit", submitAd);
-  els.foundSymbol.addEventListener("input", () => {
+  els.foundButton?.addEventListener("click", openFoundModal);
+  els.adButton?.addEventListener("click", openAdModal);
+  els.foundForm?.addEventListener("submit", submitFound);
+  els.adForm?.addEventListener("submit", submitAd);
+  els.foundSymbol?.addEventListener("input", () => {
     els.foundSymbol.value = els.foundSymbol.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
   });
   if (els.adImage) {
@@ -3513,6 +3929,10 @@
     if (action === "research") analyze(row.dataset.id);
   });
 
+  window.addEventListener("beforeunload", () => {
+    if (state?.active) writeWallet();
+  });
+
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !els.setupModal.hidden) closeModal(els.setupModal);
     if (event.key === "Escape" && !els.authModal.hidden) closeModal(els.authModal);
@@ -3534,7 +3954,11 @@
   fillFoundSectors();
   state = createState("rookie", false);
   hideDesk();
-  prepareWeek();
-  renderBest();
-  refreshKst().then(() => renderClock());
+  try {
+    prepareWeek();
+    renderBest();
+  } catch (err) {
+    console.error(err);
+  }
+  refreshKst().then(() => renderClock()).catch(() => {});
 })();
