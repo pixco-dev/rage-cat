@@ -1460,18 +1460,27 @@
   }
 
   async function reserveGlobalHandle(id, nick) {
-    const db = firebaseDb();
-    if (!db) return true;
     try {
-      const connected = await db.ref(".info/connected").once("value");
-      if (connected.val() !== true) return null;
-      const existingPlayer = await db.ref(`${FIREBASE_WORLD_PATH}/players/${safeFbKey(id)}`).once("value");
-      if (existingPlayer.exists()) return false;
-      const result = await db.ref(`bull-lab/handles/${safeFbKey(id)}`).transaction((current) => {
-        if (current) return;
-        return { id, nick, createdAt: Date.now() };
-      }, undefined, false);
-      return !!result.committed;
+      const key = safeFbKey(id);
+      const playerResponse = await firebaseRestRequest(`${FIREBASE_WORLD_PATH}/players/${key}`, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (playerResponse.ok && await playerResponse.json()) return false;
+      const path = `bull-lab/handles/${key}`;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return null;
+        const etag = read.headers.get("ETag");
+        if (await read.json()) return false;
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
+        const write = await firebaseRestRequest(path, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({ id, nick, createdAt: Date.now() }),
+        });
+        if (write.status === 412) continue;
+        return write.ok;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -1955,7 +1964,14 @@
       worldSync.online = true;
       recordTrade(side, asset, qty, total);
       queuePush();
-      return { ok: true };
+      return {
+        ok: true,
+        assetName: asset.name,
+        fillPrice: result.fillPrice,
+        total,
+        holdingQty: holding.qty,
+        cash: state.cash,
+      };
     } catch {
       noteWorldError();
       return { ok: false, err: "network" };
@@ -2743,7 +2759,25 @@
     return rows;
   }
 
+  function presenceRestPath() {
+    if (!state?.playerId) return "";
+    return `${FIREBASE_PRESENCE_PATH}/${safeFbKey(state.playerId)}/${safeFbKey(clientId)}`;
+  }
+
+  async function refreshPresenceRest() {
+    try {
+      const response = await firebaseRestRequest(FIREBASE_PRESENCE_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return;
+      worldSync.presence = presenceRows(await response.json());
+      worldSync.online = true;
+      renderSyncStatus();
+    } catch {
+      /* the next heartbeat retries */
+    }
+  }
+
   function stopPresence() {
+    const restPath = presenceRestPath();
     if (worldSync.presenceRootRef && worldSync.presenceHandler) {
       worldSync.presenceRootRef.off("value", worldSync.presenceHandler);
     }
@@ -2758,17 +2792,34 @@
     worldSync.connectedHandler = null;
     worldSync.connected = false;
     worldSync.presence = [];
+    if (restPath) firebaseRestRequest(restPath, { method: "DELETE" }).catch(() => {});
   }
 
-  function writePresence() {
-    if (!worldSync.presenceRef || !state?.active || !session) return;
-    worldSync.presenceRef.update({
+  async function writePresence() {
+    if (!state?.active || !session) return;
+    const payload = {
       playerId: state.playerId,
       playerName: state.playerName,
       clientId,
       online: true,
-      lastSeen: firebase.database.ServerValue.TIMESTAMP,
-    }).catch(() => {});
+      lastSeen: Date.now(),
+    };
+    if (worldSync.presenceRef && worldSync.connected) {
+      worldSync.presenceRef.update({ ...payload, lastSeen: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
+      return;
+    }
+    try {
+      const response = await firebaseRestRequest(presenceRestPath(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) return;
+      worldSync.online = true;
+      await refreshPresenceRest();
+    } catch {
+      /* the next heartbeat retries */
+    }
   }
 
   function syncChatRoomsDirect() {
@@ -2793,30 +2844,34 @@
 
   function startPresence() {
     const db = firebaseDb();
-    if (!db || !state?.playerId) return;
+    if (!state?.playerId) return;
     stopPresence();
-    worldSync.presenceRootRef = db.ref(FIREBASE_PRESENCE_PATH);
-    worldSync.presenceHandler = (snap) => {
-      worldSync.presence = presenceRows(snap.val());
-      renderSyncStatus();
-    };
-    worldSync.presenceRootRef.on("value", worldSync.presenceHandler);
-    worldSync.connectedRef = db.ref(".info/connected");
-    worldSync.connectedHandler = (snap) => {
-      worldSync.connected = snap.val() === true;
-      if (!worldSync.connected) {
+    if (db) {
+      worldSync.presenceRootRef = db.ref(FIREBASE_PRESENCE_PATH);
+      worldSync.presenceHandler = (snap) => {
+        worldSync.presence = presenceRows(snap.val());
         renderSyncStatus();
-        return;
-      }
-      const playerKey = safeFbKey(state.playerId);
-      const tabKey = safeFbKey(clientId);
-      worldSync.presenceRef = db.ref(`${FIREBASE_PRESENCE_PATH}/${playerKey}/${tabKey}`);
-      worldSync.presenceRef.onDisconnect().remove().catch(() => {});
-      writePresence();
-      syncChatRoomsDirect();
-      renderSyncStatus();
-    };
-    worldSync.connectedRef.on("value", worldSync.connectedHandler);
+      };
+      worldSync.presenceRootRef.on("value", worldSync.presenceHandler);
+      worldSync.connectedRef = db.ref(".info/connected");
+      worldSync.connectedHandler = (snap) => {
+        worldSync.connected = snap.val() === true;
+        if (!worldSync.connected) {
+          writePresence();
+          renderSyncStatus();
+          return;
+        }
+        const playerKey = safeFbKey(state.playerId);
+        const tabKey = safeFbKey(clientId);
+        worldSync.presenceRef = db.ref(`${FIREBASE_PRESENCE_PATH}/${playerKey}/${tabKey}`);
+        worldSync.presenceRef.onDisconnect().remove().catch(() => {});
+        writePresence();
+        syncChatRoomsDirect();
+        renderSyncStatus();
+      };
+      worldSync.connectedRef.on("value", worldSync.connectedHandler);
+    }
+    writePresence();
     worldSync.presenceTimer = setInterval(writePresence, PRESENCE_HEARTBEAT_MS);
   }
 
@@ -3820,7 +3875,7 @@
               <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
             </div>
             <div class="trade-actions">
-              <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""}>매수</button>
+              <button data-action="buy" type="button" ${disabled ? "disabled" : ""} ${maxBuy < 1 ? `title="현금이 부족합니다"` : ""}>매수</button>
               <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
             </div>
           </div>
@@ -3960,21 +4015,39 @@
     return Math.max(1, Math.floor(Number(input.value) || 1));
   }
 
+  function setOrderBusy(id, side, busy) {
+    const row = [...(els.assetList?.querySelectorAll(".asset-row") || [])].find((item) => item.dataset.id === id);
+    const button = row?.querySelector(`[data-action="${side}"]`);
+    if (!button) return;
+    button.disabled = busy;
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+    button.textContent = busy ? "주문 중…" : (side === "buy" ? "매수" : "매도");
+  }
+
   async function buy(id, qty) {
     if (!state.active) {
       toast("⚠️", "주문 실패", "시장에 들어간 뒤 주문하세요.");
       tone(130, .12, "sawtooth");
       return;
     }
-    const result = await executeSharedTrade(id, "buy", qty);
-    if (!result.ok) {
+    setOrderBusy(id, "buy", true);
+    try {
+      const result = await executeSharedTrade(id, "buy", qty);
+      if (result.ok) {
+        toast("✅", "매수 완료", `${result.assetName} ${qty}주 · ${money(result.total)} · 보유 ${result.holdingQty}주`);
+        return;
+      }
       const message = result.err === "network"
-        ? "실시간 주문 연결이 끊겼습니다. 연결 상태를 확인한 뒤 다시 주문하세요."
+        ? "공유 주문 서버가 응답하지 않았습니다. 잠시 후 다시 눌러 주세요."
         : result.err === "pending"
           ? "같은 종목의 이전 주문을 처리하고 있습니다."
-          : "보유 현금과 주문 수량을 확인하세요.";
-      toast("⚠️", "주문 실패", message);
+          : result.err === "cash"
+            ? "현금이 부족합니다. 수량을 줄여 주세요."
+            : "시장 입장 상태와 주문 수량을 확인하세요.";
+      toast("⚠️", "매수 실패", message);
       tone(130, .12, "sawtooth");
+    } finally {
+      setOrderBusy(id, "buy", false);
     }
   }
 
@@ -3984,15 +4057,22 @@
       tone(130, .12, "sawtooth");
       return;
     }
-    const result = await executeSharedTrade(id, "sell", qty);
-    if (!result.ok) {
+    setOrderBusy(id, "sell", true);
+    try {
+      const result = await executeSharedTrade(id, "sell", qty);
+      if (result.ok) {
+        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · ${money(result.total)} · 보유 ${result.holdingQty}주`);
+        return;
+      }
       const message = result.err === "network"
-        ? "실시간 주문 연결이 끊겼습니다. 연결 상태를 확인한 뒤 다시 주문하세요."
+        ? "공유 주문 서버가 응답하지 않았습니다. 잠시 후 다시 눌러 주세요."
         : result.err === "pending"
           ? "같은 종목의 이전 주문을 처리하고 있습니다."
           : "보유 수량을 확인하세요.";
-      toast("⚠️", "주문 실패", message);
+      toast("⚠️", "매도 실패", message);
       tone(130, .12, "sawtooth");
+    } finally {
+      setOrderBusy(id, "sell", false);
     }
   }
 
