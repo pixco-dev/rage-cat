@@ -30,6 +30,7 @@
   const PUT_DEBOUNCE_MS = 450;
   const FIREBASE_READ_TIMEOUT_MS = 1800;
   const FIREBASE_WRITE_TIMEOUT_MS = 4500;
+  const ACTIVITY_PASS_SCORE = 0.6;
   const TICK_MS = 1000;
   const TICK_CAP = 96;
   const LIVE_W = 640;
@@ -4164,12 +4165,20 @@
   }
 
   function payJob(job, score) {
+    const passed = Number(score) >= ACTIVITY_PASS_SCORE;
+    state.jobsDone.add(job.id);
+    if (!passed) {
+      toast(job.icon, "알바 실패", `${job.name} · 급여 0만원`);
+      tone(180, .12, "sawtooth");
+      renderAll();
+      sendWallet();
+      return 0;
+    }
     const [minPay, maxPay] = job.pay;
     const reward = Math.round((minPay + (maxPay - minPay) * Math.max(0, Math.min(1, score))) * 10) / 10;
     state.cash += reward;
     state.laborIncome += reward;
     state.jobsCount += 1;
-    state.jobsDone.add(job.id);
     toast(job.icon, "시드 입금", `${job.name} · ${money(reward)}`);
     tone(520, .1, "square");
     checkMissions();
@@ -4277,10 +4286,14 @@
     } else {
       state.playDone.add(spec.id);
       if (spec.reward === "cash") {
-        const cash = Math.round((8 + score * 18) * 10) / 10;
-        state.cash += cash;
-        state.laborIncome += cash;
-        toast("🎮", "용돈 획득", `${money(cash)}이 들어왔습니다.`);
+        if (score >= ACTIVITY_PASS_SCORE) {
+          const cash = Math.round((8 + score * 18) * 10) / 10;
+          state.cash += cash;
+          state.laborIncome += cash;
+          toast("🎮", "용돈 획득", `${money(cash)}이 들어왔습니다.`);
+        } else {
+          toast("🎮", "미니게임 실패", "보상은 0만원입니다.");
+        }
       } else if (spec.reward === "research") {
         if (score >= .7) {
           state.research += 1;
