@@ -30,7 +30,7 @@
   const PUT_DEBOUNCE_MS = 450;
   const FIREBASE_READ_TIMEOUT_MS = 1800;
   const FIREBASE_WRITE_TIMEOUT_MS = 4500;
-  const ACTIVITY_PASS_SCORE = 0.6;
+  const ACTIVITY_PASS_SCORE = 0.65;
   const TICK_MS = 1000;
   const TICK_CAP = 96;
   const LIVE_W = 640;
@@ -1994,12 +1994,13 @@
     if (state.assets.some((asset) => asset.symbol === ticker)) return { ok: false, err: "dup" };
     const firmName = String(name || "").trim().slice(0, 12);
     if (firmName.length < 2) return { ok: false, err: "name" };
-    const spend = Math.max(MIN_SEED, Math.min(owner.cash, Math.round(Number(seed) || MIN_SEED)));
-    if (spend > owner.cash) return { ok: false, err: "cash" };
-    const price = Math.max(28, Math.min(76, round1(spend / 2.1)));
-    const founderQty = Math.max(8, Math.floor(spend / price));
+    const availableCash = round1(Math.max(0, Number(owner.cash) || 0));
+    if (availableCash < MIN_SEED) return { ok: false, err: "cash" };
+    const requestedSeed = Math.round(Number(seed) || MIN_SEED);
+    const spend = Math.max(MIN_SEED, Math.min(availableCash, requestedSeed));
+    const founderQty = Math.max(8, Math.ceil(spend / 76));
+    const price = Math.max(10, Math.min(76, Math.floor((spend / founderQty) * 10) / 10));
     const cost = round1(founderQty * price);
-    if (cost > owner.cash) return { ok: false, err: "cash" };
     const id = `co-${ownerId}`;
     if (state.assets.some((asset) => asset.id === id)) return { ok: false, err: "once" };
     const asset = {
@@ -3393,7 +3394,10 @@
     els.foundError.hidden = true;
     els.foundName.value = "";
     els.foundSymbol.value = "";
-    els.foundSeed.value = String(Math.min(120, Math.max(MIN_SEED, Math.round(state.cash * 0.18))));
+    const availableSeed = Math.floor(round1(Math.max(0, state.cash)) / 10) * 10;
+    const suggestedSeed = Math.floor(Math.min(120, Math.max(MIN_SEED, state.cash * 0.18)) / 10) * 10;
+    els.foundSeed.max = String(Math.max(MIN_SEED, availableSeed));
+    els.foundSeed.value = String(Math.min(Math.max(MIN_SEED, availableSeed), suggestedSeed));
     fillFoundSectors();
     openModal(els.foundModal);
   }
@@ -4323,11 +4327,11 @@
       <p class="play-copy">${spec.copy}</p>
       <div class="play-prompt">${line}</div>
       <input class="play-input" id="type-input" type="text" autocomplete="off" placeholder="그대로 입력">
-      <p class="play-score" id="play-timer">12초</p>
+      <p class="play-score" id="play-timer">10초</p>
       <div class="play-actions"><button class="cta-button" id="type-submit" type="button">제출 <span>→</span></button></div>
     `;
     const input = $("#type-input");
-    let left = 12;
+    let left = 10;
     const timer = setInterval(() => {
       left -= 1;
       const label = $("#play-timer");
@@ -4384,7 +4388,7 @@
 
   function renderMemory(spec) {
     const pool = ["🔵", "🔴", "🟡", "🟢", "🟣", "🟠", "⚪", "⬛"];
-    const seq = Array.from({ length: 4 }, () => pool[Math.floor(random() * pool.length)]);
+    const seq = Array.from({ length: 5 }, () => pool[Math.floor(random() * pool.length)]);
     els.playStage.innerHTML = `
       <span class="overline">MINI GAME</span>
       <h2 id="play-title">${spec.title}</h2>
@@ -4466,7 +4470,7 @@
 
   function renderSort(spec) {
     const nums = [];
-    while (nums.length < 4) {
+    while (nums.length < 5) {
       const n = 10 + Math.floor(random() * 90);
       if (!nums.includes(n)) nums.push(n);
     }
@@ -4501,12 +4505,13 @@
     const pair = pairs[Math.floor(random() * pairs.length)];
     const common = pair[0];
     const odd = pair[1];
-    const oddAt = Math.floor(random() * 16);
+    const cellCount = 20;
+    const oddAt = Math.floor(random() * cellCount);
     els.playStage.innerHTML = `
       <span class="overline">MINI GAME</span>
       <h2 id="play-title">${spec.title}</h2>
       <p class="play-copy">${spec.copy}</p>
-      <div class="spot-grid">${Array.from({ length: 16 }, (_, i) => `<button type="button" class="spot-cell" data-odd="${i === oddAt ? "1" : "0"}">${i === oddAt ? odd : common}</button>`).join("")}</div>
+      <div class="spot-grid">${Array.from({ length: cellCount }, (_, i) => `<button type="button" class="spot-cell" data-odd="${i === oddAt ? "1" : "0"}">${i === oddAt ? odd : common}</button>`).join("")}</div>
     `;
     $$(".spot-cell", els.playStage).forEach((button) => {
       button.addEventListener("click", () => {
@@ -4525,10 +4530,10 @@
         <h2 id="play-title">${spec.title}</h2>
         <p class="play-copy">${spec.copy} (${round + 1}/3)</p>
         <div class="catch-row">${Array.from({ length: 4 }, (_, i) => `<button type="button" class="catch-btn ${i === ok ? "is-ok" : ""}" data-ok="${i === ok ? "1" : "0"}">${i === ok ? "GO" : "—"}</button>`).join("")}</div>
-        <p class="play-score" id="catch-timer">1.2초</p>
+        <p class="play-score" id="catch-timer">1.0초</p>
       `;
       let done = false;
-      const timer = setTimeout(() => finishRound(false), 1200);
+      const timer = setTimeout(() => finishRound(false), 1000);
       function finishRound(hit) {
         if (done) return;
         done = true;
@@ -4549,7 +4554,7 @@
   }
 
   function renderTrace(spec) {
-    const count = 6;
+    const count = 7;
     const slots = shuffled(Array.from({ length: 9 }, (_, i) => i));
     const map = {};
     for (let n = 1; n <= count; n += 1) map[slots[n - 1]] = n;

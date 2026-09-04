@@ -827,8 +827,8 @@ nav a[hidden] {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 38%;
-  width: 24%;
+  left: 40%;
+  width: 20%;
   background: rgba(31, 157, 106, .35);
 }
 
@@ -838,7 +838,7 @@ nav a[hidden] {
   bottom: 0;
   width: 6px;
   background: var(--red);
-  animation: needle-run 1.15s linear infinite;
+  animation: needle-run 1.05s linear infinite;
 }
 
 @keyframes needle-run {
