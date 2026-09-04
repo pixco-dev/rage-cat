@@ -8,6 +8,22 @@
           ".validate": "newData.hasChildren(['id', 'nick', 'createdAt']) && newData.child('id').isString() && newData.child('id').val().length >= 3 && newData.child('id').val().length <= 16 && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('createdAt').isNumber()"
         }
       },
+      "accounts": {
+        "$id": {
+          ".validate": "newData.hasChildren(['id', 'nick', 'salt', 'hash', 'createdAt']) && newData.child('id').isString() && newData.child('id').val() === $id && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('salt').isString() && newData.child('salt').val().length >= 16 && newData.child('hash').isString() && newData.child('hash').val().length === 64 && newData.child('createdAt').isNumber() && (!data.exists() || (data.child('hash').val() === newData.child('hash').val() && data.child('salt').val() === newData.child('salt').val()))"
+        }
+      },
+      "devices": {
+        "$device": {
+          ".validate": "newData.hasChildren(['createdAt', 'accounts']) && newData.child('createdAt').isNumber()",
+          "accounts": {
+            ".validate": "newData.hasChildren() && newData.numChildren() <= 2",
+            "$id": {
+              ".validate": "newData.hasChildren(['id', 'nick', 'createdAt']) && newData.child('id').isString() && newData.child('id').val() === $id && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('createdAt').isNumber()"
+            }
+          }
+        }
+      },
       "presence": {
         "$player": {
           "$client": {

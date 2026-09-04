@@ -16,6 +16,11 @@
   const CLIENT_BUILD = "20260904d";
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
+  const DEVICE_STORE = "bull-lab-device-v1";
+  const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v1";
+  const DEVICE_PATH = "bull-lab/devices";
+  const ACCOUNT_PATH = "bull-lab/accounts";
+  const MAX_DEVICE_ACCOUNTS = 2;
   const WEALTH_SANITY = 50000;
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
@@ -1698,8 +1703,8 @@
     els.authSubmit.innerHTML = mode === "login" ? `로그인 <span>→</span>` : `계좌 만들기 <span>→</span>`;
     if (els.authLead) {
       els.authLead.textContent = mode === "login"
-        ? "이미 계좌가 있으면 로그인하세요. 처음이면 회원가입에서 투자 계좌가 만들어집니다."
-        : "회원가입하면 투자 계좌가 개설됩니다. 아이디는 시장에서 투자자 이름과 창업자 명의로 쓰입니다.";
+        ? "아이디와 비밀번호만 있으면 다른 폰에서도 로그인할 수 있습니다. 처음이면 회원가입하세요."
+        : "회원가입하면 투자 계좌가 개설됩니다. 같은 기기에서는 계정을 2개까지 만들 수 있습니다.";
     }
     els.authNickWrap.hidden = mode === "login";
     els.authPass.autocomplete = mode === "login" ? "current-password" : "new-password";
@@ -1709,6 +1714,205 @@
   function showAuthError(message) {
     els.authError.hidden = false;
     els.authError.textContent = message;
+  }
+
+  function deviceId() {
+    try {
+      let value = localStorage.getItem(DEVICE_STORE);
+      if (!value) {
+        value = window.crypto?.randomUUID?.() || `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        localStorage.setItem(DEVICE_STORE, value);
+      }
+      return value;
+    } catch {
+      return `dev-${Date.now().toString(36)}`;
+    }
+  }
+
+  function readDeviceAccountIds() {
+    try {
+      const raw = localStorage.getItem(DEVICE_ACCOUNTS_STORE);
+      if (raw == null) {
+        const seeded = Object.keys(readAccounts());
+        writeDeviceAccountIds(seeded);
+        return seeded;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const ids = [];
+      const seen = new Set();
+      parsed.forEach((id) => {
+        const key = String(id || "").trim().toLowerCase();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        ids.push(key);
+      });
+      return ids;
+    } catch {
+      return [];
+    }
+  }
+
+  function writeDeviceAccountIds(ids) {
+    const unique = [];
+    const seen = new Set();
+    ids.forEach((id) => {
+      const key = String(id || "").trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      unique.push(key);
+    });
+    try {
+      localStorage.setItem(DEVICE_ACCOUNTS_STORE, JSON.stringify(unique));
+    } catch {
+      /* quota */
+    }
+    return unique;
+  }
+
+  function rememberDeviceAccount(id) {
+    const ids = readDeviceAccountIds();
+    if (!ids.includes(id)) ids.push(id);
+    return writeDeviceAccountIds(ids);
+  }
+
+  function deviceAccountsFromNode(node) {
+    const accounts = node?.accounts;
+    if (!accounts || typeof accounts !== "object") return {};
+    const out = {};
+    Object.keys(accounts).forEach((key) => {
+      const row = accounts[key];
+      const id = String(row?.id || key || "").trim().toLowerCase();
+      if (!id) return;
+      out[safeFbKey(id)] = row && typeof row === "object"
+        ? { ...row, id }
+        : { id, nick: id, createdAt: Date.now() };
+    });
+    return out;
+  }
+
+  async function releaseGlobalHandle(id) {
+    try {
+      await firebaseRestRequest(`bull-lab/handles/${safeFbKey(id)}`, { method: "DELETE" }, FIREBASE_READ_TIMEOUT_MS);
+    } catch {
+      /* handle stays reserved */
+    }
+  }
+
+  async function reserveDeviceSlot(id, nick) {
+    const localIds = readDeviceAccountIds();
+    if (!localIds.includes(id) && localIds.length >= MAX_DEVICE_ACCOUNTS) return false;
+    const path = `${DEVICE_PATH}/${safeFbKey(deviceId())}`;
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return null;
+        const etag = read.headers.get("ETag");
+        const current = await read.json();
+        const accounts = deviceAccountsFromNode(current);
+        if (accounts[safeFbKey(id)]) {
+          rememberDeviceAccount(id);
+          return true;
+        }
+        if (Object.keys(accounts).length >= MAX_DEVICE_ACCOUNTS) return false;
+        accounts[safeFbKey(id)] = {
+          id,
+          nick: String(nick || id).slice(0, 16),
+          createdAt: Date.now(),
+        };
+        const body = {
+          createdAt: Number(current?.createdAt) || Date.now(),
+          accounts,
+        };
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
+        const write = await firebaseRestRequest(path, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(body),
+        });
+        if (write.status === 412) continue;
+        if (!write.ok) return null;
+        rememberDeviceAccount(id);
+        return true;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveLocalAccount(row) {
+    if (!row?.id || !row.salt || !row.hash) return;
+    const accounts = readAccounts();
+    accounts[row.id] = {
+      id: row.id,
+      nick: String(row.nick || row.id).slice(0, 16),
+      salt: row.salt,
+      hash: row.hash,
+      created: Number(row.created || row.createdAt) || Date.now(),
+    };
+    writeAccounts(accounts);
+  }
+
+  async function fetchRemoteAccount(id) {
+    try {
+      const response = await firebaseRestRequest(`${ACCOUNT_PATH}/${safeFbKey(id)}`, {}, FIREBASE_WRITE_TIMEOUT_MS);
+      if (!response.ok) return null;
+      const row = await response.json();
+      if (!row || typeof row !== "object" || !row.hash || !row.salt) return null;
+      return { ...row, id: row.id || id };
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleExists(id) {
+    try {
+      const response = await firebaseRestRequest(`bull-lab/handles/${safeFbKey(id)}`, {}, FIREBASE_WRITE_TIMEOUT_MS);
+      if (!response.ok) return null;
+      return !!(await response.json());
+    } catch {
+      return null;
+    }
+  }
+
+  async function publishRemoteAccount(id, nick, hashed, created) {
+    const path = `${ACCOUNT_PATH}/${safeFbKey(id)}`;
+    const body = {
+      id,
+      nick: String(nick || id).slice(0, 16),
+      salt: hashed.salt,
+      hash: hashed.hash,
+      createdAt: Number(created) || Date.now(),
+    };
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return null;
+        const etag = read.headers.get("ETag");
+        const current = await read.json();
+        if (current?.hash && current?.salt) return current;
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
+        const write = await firebaseRestRequest(path, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(body),
+        });
+        if (write.status === 412) continue;
+        return write.ok ? body : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function verifyPassword(row, password) {
+    if (!row?.salt || !row?.hash) return false;
+    const hashed = await hashPassword(password, row.salt);
+    return hashed.hash === row.hash;
   }
 
   async function reserveGlobalHandle(id, nick) {
@@ -1757,32 +1961,76 @@
         showAuthError("이미 있는 아이디입니다.");
         return;
       }
+      const localSlots = readDeviceAccountIds();
+      writeDeviceAccountIds(localSlots);
+      if (localSlots.length >= MAX_DEVICE_ACCOUNTS && !localSlots.includes(id)) {
+        showAuthError("이 기기에서는 계정을 2개까지만 만들 수 있습니다. 이미 만든 아이디로 로그인하세요.");
+        return;
+      }
+      const taken = await fetchRemoteAccount(id);
+      if (taken) {
+        showAuthError("이미 다른 투자자가 사용 중인 아이디입니다. 로그인하세요.");
+        return;
+      }
       const reserved = await reserveGlobalHandle(id, nick);
       if (reserved === false) {
-        showAuthError("이미 다른 투자자가 사용 중인 아이디입니다.");
+        showAuthError("이미 다른 투자자가 사용 중인 아이디입니다. 로그인하세요.");
         return;
       }
       if (reserved === null) {
         showAuthError("공유 시장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
         return;
       }
+      const slotted = await reserveDeviceSlot(id, nick);
+      if (slotted === false) {
+        await releaseGlobalHandle(id);
+        showAuthError("이 기기에서는 계정을 2개까지만 만들 수 있습니다. 이미 만든 아이디로 로그인하세요.");
+        return;
+      }
+      if (slotted === null) {
+        await releaseGlobalHandle(id);
+        showAuthError("공유 시장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
       const hashed = await hashPassword(password);
-      accounts[id] = { id, nick, salt: hashed.salt, hash: hashed.hash, created: Date.now() };
+      const created = Date.now();
+      accounts[id] = { id, nick, salt: hashed.salt, hash: hashed.hash, created };
       writeAccounts(accounts);
+      rememberDeviceAccount(id);
+      await publishRemoteAccount(id, nick, hashed, created);
       writeSession({ id, nick });
       seedNewWallet(id);
     } else {
-      const row = accounts[id];
+      let row = accounts[id];
       if (!row) {
-        showAuthError("계정을 찾을 수 없습니다. 회원가입을 먼저 하세요.");
-        return;
+        const remote = await fetchRemoteAccount(id);
+        if (!remote) {
+          const exists = await handleExists(id);
+          if (exists) {
+            showAuthError("이 아이디는 처음 만든 폰에서 한 번 로그인해야 다른 기기에서도 쓸 수 있습니다.");
+            return;
+          }
+          if (exists === null) {
+            showAuthError("공유 시장에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+            return;
+          }
+          showAuthError("계정을 찾을 수 없습니다. 회원가입을 먼저 하세요.");
+          return;
+        }
+        if (!(await verifyPassword(remote, password))) {
+          showAuthError("비밀번호가 맞지 않습니다.");
+          return;
+        }
+        saveLocalAccount(remote);
+        writeSession({ id, nick: remote.nick || id });
+      } else {
+        if (!(await verifyPassword(row, password))) {
+          showAuthError("비밀번호가 맞지 않습니다.");
+          return;
+        }
+        writeSession({ id, nick: row.nick || id });
+        publishRemoteAccount(id, row.nick || id, { salt: row.salt, hash: row.hash }, row.created).catch(() => {});
       }
-      const hashed = await hashPassword(password, row.salt);
-      if (hashed.hash !== row.hash) {
-        showAuthError("비밀번호가 맞지 않습니다.");
-        return;
-      }
-      writeSession({ id, nick: row.nick || id });
     }
     await fetchBans();
     if (isBanned(id)) {
