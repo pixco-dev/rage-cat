@@ -17,16 +17,16 @@
       },
       "world": {
         "meta": {
-          ".validate": "newData.child('clientBuild').val() === '20260904d'"
+          ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true"
         },
         "assets": {
           "$id": {
-            ".validate": "newData.child('clientBuild').val() === '20260904d'"
+            ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true"
           }
         },
         "players": {
           "$id": {
-            ".validate": "newData.child('clientBuild').val() === '20260904d' && !root.child('bull-lab/bans').child($id).exists()"
+            ".validate": "newData.child('clientBuild').val() === '20260904d' && !root.child('bull-lab/bans').child($id).exists() && root.child('bull-lab/halt/stopped').val() !== true"
           }
         },
         "chatRooms": {

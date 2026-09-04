@@ -15,6 +15,7 @@
   const FIREBASE_WORLD_PATH = "bull-lab/world";
   const CLIENT_BUILD = "20260904d";
   const BAN_PATH = "bull-lab/bans";
+  const HALT_PATH = "bull-lab/halt";
   const WEALTH_SANITY = 50000;
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
@@ -733,6 +734,7 @@
   let pendingBorrowLenderId = "";
   let pendingLendAction = "";
   let banMap = {};
+  let serverStopped = false;
   let activeChatRoomId = "";
   let selectedChartId = "";
   const clientId = (() => {
@@ -786,6 +788,7 @@
     applyingRemote: false,
     unsub: null,
     banUnsub: null,
+    haltUnsub: null,
     tradeLockUntil: 0,
   };
   const kstClock = {
@@ -1012,6 +1015,51 @@
     const db = firebaseDb();
     if (db && worldSync.banUnsub) db.ref(BAN_PATH).off("value", worldSync.banUnsub);
     worldSync.banUnsub = null;
+  }
+
+  function isServerStopped() {
+    return !!serverStopped;
+  }
+
+  function applyHalt(value) {
+    const stopped = !!(value && typeof value === "object" && value.stopped === true);
+    const was = serverStopped;
+    serverStopped = stopped;
+    if (stopped) ejectHalted();
+    else if (was) toast("📈", "서버 재개", "시장이 다시 열렸습니다. 투자 시작하기를 눌러 입장하세요.");
+  }
+
+  function ejectHalted() {
+    if (!isServerStopped()) return;
+    if (state?.active || worldSync.inMarket) {
+      worldSync.inMarket = false;
+      if (state) state.active = false;
+      hideDesk();
+      stopWorldSync();
+      toast("⛔", "서버 정지", "교사가 공유 시장을 멈췄습니다. 지금은 거래할 수 없습니다.");
+    }
+  }
+
+  async function fetchHalt() {
+    try {
+      const response = await firebaseRestRequest(HALT_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return;
+      applyHalt(await response.json());
+    } catch {
+      /* keep local halt */
+    }
+  }
+
+  function subscribeHalt() {
+    const db = firebaseDb();
+    if (!db) {
+      fetchHalt();
+      return;
+    }
+    if (worldSync.haltUnsub) return;
+    const handler = (snap) => applyHalt(snap.val());
+    db.ref(HALT_PATH).on("value", handler);
+    worldSync.haltUnsub = handler;
   }
 
   function normalizeChatRoom(room) {
@@ -2180,6 +2228,10 @@
     qty = Math.floor(Number(qty) || 0);
     if (isBanned(state?.playerId) || isBanned(session?.id)) {
       ejectBanned();
+      return { ok: false, err: "locked" };
+    }
+    if (isServerStopped()) {
+      ejectHalted();
       return { ok: false, err: "locked" };
     }
     const localAsset = assetById(assetId);
@@ -3429,6 +3481,10 @@
       ejectBanned();
       return false;
     }
+    if (isServerStopped()) {
+      ejectHalted();
+      return false;
+    }
     if (!firebaseReady()) {
       noteWorldError();
       return false;
@@ -3669,6 +3725,7 @@
     stopWorldSync();
     subscribeWorld();
     subscribeBans();
+    subscribeHalt();
     startPresence();
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
@@ -3717,9 +3774,15 @@
         return;
       }
       await fetchBans();
+      await fetchHalt();
       if (isBanned(session.id)) {
         if (els.lobbyStatus) els.lobbyStatus.textContent = "이 계좌는 강퇴되어 시장에 들어갈 수 없습니다.";
         toast("🚫", "입장 거부", "강퇴된 아이디입니다. 다른 계좌를 만드세요.");
+        return;
+      }
+      if (isServerStopped()) {
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "서버가 정지되어 있습니다. 교사가 다시 열 때까지 기다리세요.";
+        toast("⛔", "서버 정지", "지금은 공유 시장에 들어갈 수 없습니다.");
         return;
       }
       if (worldSync.inMarket && state?.active) {
@@ -6066,4 +6129,6 @@
   }
   refreshKst().then(() => renderClock()).catch(() => {});
   fetchBans().then(() => loadPublicRanking());
+  fetchHalt();
+  subscribeHalt();
 })();

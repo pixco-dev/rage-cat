@@ -3,6 +3,7 @@
 
   const WORLD_PATH = "bull-lab/world";
   const BAN_PATH = "bull-lab/bans";
+  const HALT_PATH = "bull-lab/halt";
   const PRESENCE_PATH = "bull-lab/presence";
   const WEALTH_SANITY = 50000;
   const DEFAULT_FIREBASE_CONFIG = {
@@ -19,7 +20,11 @@
   const playersEl = document.querySelector("#kick-players");
   const bannedEl = document.querySelector("#kick-banned");
   const statusEl = document.querySelector("#kick-status");
+  const haltBox = document.querySelector("#kick-halt");
+  const haltCopy = document.querySelector("#halt-copy");
+  const haltToggle = document.querySelector("#halt-toggle");
   const toastStack = document.querySelector("#toast-stack");
+  let haltStopped = false;
 
   function firebaseConfig() {
     const cfg = window.FIREBASE_CONFIG || DEFAULT_FIREBASE_CONFIG;
@@ -99,14 +104,16 @@
   async function loadDesk() {
     statusEl.textContent = "불러오는 중…";
     try {
-      const [playersRes, bansRes, assetsRes] = await Promise.all([
+      const [playersRes, bansRes, assetsRes, haltRes] = await Promise.all([
         rest(`${WORLD_PATH}/players`),
         rest(BAN_PATH),
         rest(`${WORLD_PATH}/assets`),
+        rest(HALT_PATH),
       ]);
       const players = listFromMap(await playersRes.json());
       const bans = listFromMap(await bansRes.json());
       const assets = listFromMap(await assetsRes.json());
+      applyHalt(await haltRes.json());
       const banIds = new Set(bans.map((row) => row.id));
       const ranked = players
         .filter((player) => player.id && !String(player.id).startsWith("bot-") && !String(player.id).startsWith("guest-"))
@@ -147,10 +154,48 @@
           </li>`).join("");
       }
 
-      statusEl.textContent = `시장 ${ranked.length}명 · 강퇴 ${bans.length}명`;
+      statusEl.textContent = `${haltStopped ? "정지됨" : "운영 중"} · 시장 ${ranked.length}명 · 강퇴 ${bans.length}명`;
     } catch {
       statusEl.textContent = "공유 시장에 닿지 못했습니다.";
       toast("연결 실패", "잠시 후 다시 불러와 주세요.");
+    }
+  }
+
+  function applyHalt(value) {
+    haltStopped = !!(value && typeof value === "object" && value.stopped === true);
+    haltBox?.classList.toggle("is-stopped", haltStopped);
+    if (haltCopy) haltCopy.textContent = haltStopped
+      ? "정지됨. 학생은 시장에 들어갈 수 없습니다."
+      : "운영 중. 학생들이 지금 거래할 수 있습니다.";
+    if (haltToggle) {
+      haltToggle.textContent = haltStopped ? "서버 재개" : "서버 정지";
+      haltToggle.className = haltStopped ? "unkick-button" : "kick-button";
+    }
+  }
+
+  async function toggleHalt() {
+    const next = !haltStopped;
+    const ok = window.confirm(next
+      ? "서버를 정지할까요?\n지금 접속 중인 학생은 시장에서 나가고, 다시 열 때까지 입장할 수 없습니다."
+      : "서버를 다시 열까요?\n학생들이 투자 시작하기를 누르면 다시 들어올 수 있습니다.");
+    if (!ok) return;
+    haltToggle.disabled = true;
+    try {
+      await rest(HALT_PATH, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stopped: next,
+          at: Date.now(),
+          by: "kick-desk",
+        }),
+      });
+      applyHalt({ stopped: next });
+      toast(next ? "서버 정지" : "서버 재개", next ? "공유 시장을 멈췄습니다." : "공유 시장을 다시 열었습니다.");
+    } catch {
+      toast("실패", "서버 상태를 바꾸지 못했습니다.");
+    } finally {
+      haltToggle.disabled = false;
     }
   }
 
@@ -199,6 +244,9 @@
 
   document.querySelector("#kick-refresh")?.addEventListener("click", () => {
     loadDesk();
+  });
+  haltToggle?.addEventListener("click", () => {
+    toggleHalt();
   });
 
   playersEl?.addEventListener("click", (event) => {
