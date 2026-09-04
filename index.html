@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904n">
+  <link rel="stylesheet" href="style.css?v=20260904p">
 </head>
 <body>
   <header class="site-header">
@@ -450,8 +450,8 @@
       <span class="overline">LOAN DESK</span>
       <h2 id="borrow-title">대출 받기</h2>
       <p id="borrow-lead">금리는 대출회사가 정한 비율로, 교시가 끝날 때마다 붙습니다.</p>
-      <form class="found-form" id="borrow-form">
-        <label>금액 (만원)<input id="borrow-amount" type="number" min="10" step="10" value="40" required></label>
+      <form class="found-form" id="borrow-form" novalidate>
+        <label>금액 (만원)<input id="borrow-amount" type="number" min="1" step="1" value="40" inputmode="decimal" required></label>
         <p class="form-error" id="borrow-error" hidden></p>
         <button class="cta-button setup-start" type="submit">빌리기 <span>→</span></button>
       </form>
@@ -530,6 +530,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260904n"></script>
+  <script src="game.js?v=20260904p"></script>
 </body>
 </html>

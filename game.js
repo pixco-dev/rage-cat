@@ -1342,12 +1342,20 @@
   }
 
   function mergeLoanList(localList, remoteList) {
-    const byId = new Map((localList || []).map((item) => [item.id, item]).filter((entry) => entry[0]));
+    const byId = new Map();
+    (localList || []).forEach((item) => {
+      if (item?.id) byId.set(item.id, item);
+    });
     (remoteList || []).forEach((row) => {
       const next = publicLoan(row);
       if (!next) return;
       const local = byId.get(next.id);
       if (local && worldSync.touched.has(`loan:${next.id}`)) return;
+      if (local && (Number(local.updatedAt) || 0) > (Number(next.updatedAt) || 0)) return;
+      if (local && (Number(local.paid) || 0) > (Number(next.paid) || 0)) {
+        next.paid = Number(local.paid) || 0;
+        if (local.status === "closed") next.status = "closed";
+      }
       if (local) Object.assign(local, next);
       else byId.set(next.id, next);
     });
@@ -4501,30 +4509,44 @@
       withdraw: "출자금 출금",
     };
     if (els.borrowTitle) els.borrowTitle.textContent = titles[action] || "대출";
+    const amountEl = els.borrowAmount;
     if (action === "borrow") {
-      const max = Math.min(MAX_BORROW, Math.floor((Number(lender?.pool) || 0) / 10) * 10);
+      const max = Math.min(MAX_BORROW, Math.floor((Number(lender?.pool) || 0)));
       els.borrowLead.textContent = `${lender?.name || "대출회사"} · 교시당 ${lender?.rate || 0}% · 재원 ${money(lender?.pool || 0)}. 주식처럼 사고파는 회사가 아닙니다.`;
-      els.borrowAmount.min = String(MIN_BORROW);
-      els.borrowAmount.max = String(Math.max(MIN_BORROW, max));
-      els.borrowAmount.value = String(Math.min(40, Math.max(MIN_BORROW, max)));
+      if (amountEl) {
+        amountEl.min = String(MIN_BORROW);
+        amountEl.step = "1";
+        amountEl.max = String(Math.max(MIN_BORROW, max));
+        amountEl.value = String(Math.min(40, Math.max(MIN_BORROW, max)));
+      }
     } else if (action === "repay") {
       const loan = openLoanFor(lenderId, state.playerId);
       const remaining = loanRemaining(loan);
-      els.borrowLead.textContent = `${lender?.name || "대출회사"}에 ${money(remaining)}이 남아 있습니다. 갚은 돈은 회사 재원으로 들어갑니다.`;
-      els.borrowAmount.min = "1";
-      els.borrowAmount.max = String(Math.max(1, Math.floor(Math.min(state.cash, remaining))));
-      els.borrowAmount.value = String(Math.max(1, Math.floor(Math.min(state.cash, remaining))));
+      const cap = round1(Math.min(Number(state.cash) || 0, remaining));
+      els.borrowLead.textContent = `${lender?.name || "대출회사"}에 ${money(remaining)}이 남아 있습니다. 한 번에 전액까지 갚을 수 있고, 갚은 돈은 회사 재원으로 들어갑니다.`;
+      if (amountEl) {
+        amountEl.min = "0.1";
+        amountEl.step = "0.1";
+        amountEl.max = String(Math.max(0.1, cap));
+        amountEl.value = String(Math.max(0.1, cap));
+      }
     } else if (action === "fund") {
       els.borrowLead.textContent = "현금에서 대출 재원으로 옮깁니다. 상장 주식과는 별개입니다.";
-      els.borrowAmount.min = "10";
-      els.borrowAmount.max = String(Math.max(10, Math.floor(state.cash / 10) * 10));
-      els.borrowAmount.value = String(Math.min(20, Math.max(10, Math.floor(state.cash / 10) * 10)));
+      if (amountEl) {
+        amountEl.min = "10";
+        amountEl.step = "1";
+        amountEl.max = String(Math.max(10, Math.floor(state.cash)));
+        amountEl.value = String(Math.min(20, Math.max(10, Math.floor(state.cash))));
+      }
     } else {
       const pool = Number(lender?.pool) || 0;
       els.borrowLead.textContent = `재원 ${money(pool)}을 내 현금으로 옮깁니다.`;
-      els.borrowAmount.min = "1";
-      els.borrowAmount.max = String(Math.max(1, Math.floor(pool)));
-      els.borrowAmount.value = String(Math.min(20, Math.max(1, Math.floor(pool))));
+      if (amountEl) {
+        amountEl.min = "1";
+        amountEl.step = "1";
+        amountEl.max = String(Math.max(1, Math.floor(pool)));
+        amountEl.value = String(Math.max(1, Math.floor(pool)));
+      }
     }
     const submit = els.borrowForm?.querySelector("button[type='submit']");
     if (submit) {
@@ -4567,7 +4589,11 @@
 
   async function submitBorrow(event) {
     event.preventDefault();
-    const amount = Number(els.borrowAmount.value);
+    const amount = round1(Number(els.borrowAmount.value));
+    if (!(amount > 0)) {
+      showBorrowError("금액을 입력하세요.");
+      return;
+    }
     const action = pendingLendAction;
     const lenderId = pendingBorrowLenderId;
     let result;
