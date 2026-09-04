@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0e1915">
+  <title>강퇴 데스크 — 불장연구소</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20260904i">
+</head>
+<body class="kick-desk">
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="불장연구소 홈">
+      <span class="brand-icon">火</span>
+      <span><b>불장</b>연구소</span>
+    </a>
+    <nav>
+      <span class="best-record">KICK DESK</span>
+    </nav>
+  </header>
+
+  <main class="kick-main">
+    <p class="overline">STAFF ONLY</p>
+    <h1>강퇴 데스크</h1>
+    <p class="kick-lead">돈 복사처럼 말이 안 되는 계좌는 여기서만 강퇴합니다. 이 주소는 학생 화면에 없습니다.</p>
+    <p class="kick-status" id="kick-status">연결 중…</p>
+    <div class="kick-toolbar">
+      <button type="button" class="cta-button" id="kick-refresh">다시 불러오기 <span>↻</span></button>
+    </div>
+
+    <section class="kick-section">
+      <h2>시장 계좌</h2>
+      <ul class="kick-list" id="kick-players"></ul>
+    </section>
+
+    <section class="kick-section">
+      <h2>강퇴된 계좌</h2>
+      <ul class="kick-list" id="kick-banned"></ul>
+    </section>
+  </main>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="market-config.js?v=20260903"></script>
+  <script src="kick.js?v=20260904i"></script>
+</body>
+</html>

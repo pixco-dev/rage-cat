@@ -2538,7 +2538,7 @@ body.modal-open {
 
 .rank-list li {
   display: grid;
-  grid-template-columns: 22px 1fr auto auto;
+  grid-template-columns: 22px 1fr auto;
   gap: 8px;
   align-items: center;
   padding: 8px 0;
@@ -2566,27 +2566,6 @@ body.modal-open {
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
-}
-
-.rank-list li.is-flagged small {
-  color: var(--red);
-}
-
-.kick-button {
-  display: none;
-  min-height: 32px;
-  padding: 0 8px;
-  cursor: pointer;
-  color: var(--white);
-  background: var(--red);
-  font-size: 11px;
-  font-weight: 700;
-  touch-action: manipulation;
-}
-
-body.is-mod .kick-button {
-  display: inline-flex;
-  align-items: center;
 }
 
 .room-actions {
@@ -2973,4 +2952,103 @@ body.is-mod .kick-button {
     animation-duration: .01ms !important;
     transition-duration: .01ms !important;
   }
+}
+
+.kick-desk .kick-main {
+  width: min(720px, calc(100% - 32px));
+  margin: 32px auto 80px;
+}
+
+.kick-desk h1 {
+  margin: 8px 0 12px;
+  font-family: "Song Myung", serif;
+  font-size: 36px;
+}
+
+.kick-lead,
+.kick-status {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.kick-status {
+  margin-top: 8px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.kick-toolbar {
+  margin: 20px 0 28px;
+}
+
+.kick-section + .kick-section {
+  margin-top: 28px;
+}
+
+.kick-section h2 {
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+
+.kick-list {
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.kick-list li {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.kick-list .kick-empty {
+  display: block;
+  color: var(--muted);
+  padding: 16px 0;
+  border-bottom: 0;
+}
+
+.kick-n {
+  color: var(--red);
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 700;
+}
+
+.kick-list b {
+  display: block;
+}
+
+.kick-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kick-list li.is-flagged small {
+  color: var(--red);
+}
+
+.kick-button,
+.unkick-button {
+  min-height: 40px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.kick-button {
+  color: var(--white);
+  background: var(--red);
+}
+
+.unkick-button {
+  color: var(--ink);
+  background: var(--lime);
+}
+
+.kick-done {
+  color: var(--muted);
+  font-size: 12px;
 }

@@ -15,7 +15,6 @@
   const FIREBASE_WORLD_PATH = "bull-lab/world";
   const CLIENT_BUILD = "20260904d";
   const BAN_PATH = "bull-lab/bans";
-  const MOD_STORE = "bull-lab-mod-v1";
   const WEALTH_SANITY = 50000;
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
@@ -671,7 +670,6 @@
     playerCount: $("#player-count"),
     rankStrip: $("#rank-strip"),
     rankList: $("#rank-list"),
-    rankModArm: $("#rank-mod-arm"),
     foundButton: $("#found-button"),
     lendButton: $("#lend-button"),
     adButton: $("#ad-button"),
@@ -735,8 +733,6 @@
   let pendingBorrowLenderId = "";
   let pendingLendAction = "";
   let banMap = {};
-  let isMod = false;
-  let modArmClicks = 0;
   let activeChatRoomId = "";
   let selectedChartId = "";
   const clientId = (() => {
@@ -979,22 +975,6 @@
     renderRanking();
   }
 
-  function readModFlag() {
-    try {
-      return localStorage.getItem(MOD_STORE) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function enableMod(silent) {
-    isMod = true;
-    try { localStorage.setItem(MOD_STORE, "1"); } catch { /* quota */ }
-    document.body.classList.add("is-mod");
-    if (!silent) toast("🛡️", "운영 모드", "순위표에서 강퇴할 수 있습니다. 복사 계좌는 공유 순위에서 빠집니다.");
-    renderRanking();
-  }
-
   function ejectBanned() {
     if (!isBanned(session?.id) && !isBanned(state?.playerId)) return;
     if (state?.active || worldSync.inMarket) {
@@ -1032,43 +1012,6 @@
     const db = firebaseDb();
     if (db && worldSync.banUnsub) db.ref(BAN_PATH).off("value", worldSync.banUnsub);
     worldSync.banUnsub = null;
-  }
-
-  async function kickPlayer(id) {
-    if (!isMod) return;
-    const playerId = String(id || "").trim();
-    if (!playerId || playerId === session?.id || playerId === state?.playerId) {
-      toast("🛡️", "강퇴 불가", "자기 자신은 강퇴할 수 없습니다.");
-      return;
-    }
-    const player = (state.players || []).find((item) => item.id === playerId);
-    const label = player?.name || playerId;
-    if (!window.confirm(`${label} 계좌를 강퇴할까요?\n공유 순위에서 빠지고, 이 아이디로는 다시 못 들어옵니다.`)) return;
-    const key = safeFbKey(playerId);
-    const headers = { "Content-Type": "application/json" };
-    try {
-      await firebaseRestRequest(`${BAN_PATH}/${key}`, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify({
-          id: playerId,
-          name: label,
-          reason: "wealth-cheat",
-          at: Date.now(),
-          by: session?.id || "mod",
-        }),
-      });
-      await firebaseRestRequest(`${FIREBASE_WORLD_PATH}/players/${key}`, { method: "DELETE" });
-      await firebaseRestRequest(`${FIREBASE_WORLD_PATH}/lenders/${safeFbKey(`ln-${playerId}`)}`, { method: "DELETE" });
-      await firebaseRestRequest(`${FIREBASE_PRESENCE_PATH}/${key}`, { method: "DELETE" });
-    } catch {
-      toast("🛡️", "강퇴 실패", "공유 시장에 닿지 못했습니다. 잠시 후 다시 눌러 주세요.");
-      return;
-    }
-    banMap[playerId] = { id: playerId, name: label };
-    state.players = (state.players || []).filter((item) => item.id !== playerId);
-    toast("🚫", "강퇴", `${label}을 공유 시장에서 뺐습니다.`);
-    renderRanking();
   }
 
   function normalizeChatRoom(room) {
@@ -1200,10 +1143,9 @@
     return payload;
   }
 
-  function humansRanked(options = {}) {
+  function humansRanked() {
     if (!state) return [];
     syncLocalPlayer();
-    const includeHidden = !!options.includeHidden;
     const byId = new Map();
     (state.players || []).forEach((player) => {
       if (!player?.id || player.bot || String(player.id).startsWith("bot-")) return;
@@ -1219,7 +1161,7 @@
         const total = player.id === state.playerId ? totalAssets() : playerTotal(player);
         return { ...player, total: Number.isFinite(total) ? total : 0 };
       })
-      .filter((player) => includeHidden || player.id === state.playerId || !isHiddenWealth(player))
+      .filter((player) => player.id === state.playerId || !isHiddenWealth(player))
       .sort((a, b) => {
         const dt = (b.total || 0) - (a.total || 0);
         if (dt !== 0) return dt;
@@ -4309,26 +4251,19 @@
   }
 
   function renderRanking() {
-    const ranked = humansRanked({ includeHidden: isMod });
-    const visible = humansRanked();
-    const board = isMod ? ranked : visible;
-    const meIndex = visible.findIndex((player) => player.id === state?.playerId);
-    let top = visible.slice(0, 5);
-    if (meIndex >= 5) top = [...visible.slice(0, 4), visible[meIndex]];
-    const place = (player) => board.findIndex((item) => item.id === player.id) + 1;
-    const rows = board.slice(0, isMod ? 12 : 5).map((player) => {
+    const ranked = humansRanked();
+    const meIndex = ranked.findIndex((player) => player.id === state?.playerId);
+    let top = ranked.slice(0, 5);
+    if (meIndex >= 5) top = [...ranked.slice(0, 4), ranked[meIndex]];
+    const place = (player) => ranked.findIndex((item) => item.id === player.id) + 1;
+    const rows = top.map((player) => {
       const me = player.id === state?.playerId;
       const firm = player.founded?.symbol || "";
-      const hidden = isHiddenWealth(player);
-      const kick = isMod && !me
-        ? `<button type="button" class="kick-button" data-kick="${esc(player.id)}">강퇴</button>`
-        : "";
       return `
-        <li class="${me ? "is-me" : ""} ${hidden ? "is-flagged" : ""}">
-          <span class="rank-n">${place(player) > 0 ? place(player) : "–"}</span>
-          <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}${hidden ? `<span class="me-tag">이상</span>` : ""}</b>
+        <li class="${me ? "is-me" : ""}">
+          <span class="rank-n">${place(player)}</span>
+          <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b>
           <small>${firm ? `${esc(firm)} · ` : ""}${money(player.total || 0)}</small>
-          ${kick}
         </li>`;
     }).join("");
     if (els.rankStrip) {
@@ -4338,7 +4273,7 @@
       }).join("");
     }
     if (els.rankList) {
-      els.rankList.innerHTML = rows || `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
+      els.rankList.innerHTML = top.length ? rows : `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
     }
   }
 
@@ -6073,21 +6008,6 @@
     }
   });
 
-  els.rankList?.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-kick]");
-    if (!button) return;
-    event.preventDefault();
-    kickPlayer(button.dataset.kick);
-  });
-
-  els.rankModArm?.addEventListener("click", () => {
-    modArmClicks += 1;
-    if (modArmClicks >= 6) {
-      modArmClicks = 0;
-      enableMod(false);
-    }
-  });
-
   els.assetList.addEventListener("click", (event) => {
     const row = event.target.closest(".asset-row");
     if (!row) return;
@@ -6133,7 +6053,6 @@
   });
 
   session = readSession();
-  if (readModFlag() || new URLSearchParams(location.search).get("mod") === "1") enableMod(true);
   renderAccount();
   fillFoundSectors();
   state = createState("rookie", false);
