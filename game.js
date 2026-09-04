@@ -3795,7 +3795,7 @@
       const spark = row.querySelector(".asset-spark path");
       if (spark) spark.setAttribute("d", sparkPath(values, SPARK_W, SPARK_H));
       const svg = row.querySelector(".asset-spark");
-      if (svg) svg.className = `asset-spark ${tone}`;
+      if (svg) svg.setAttribute("class", `asset-spark ${tone}`);
       const last = row.querySelector(".asset-last");
       if (last) last.textContent = money(asset.price);
     });
