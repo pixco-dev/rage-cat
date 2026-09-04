@@ -37,7 +37,12 @@
         },
         "assets": {
           "$id": {
-            ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true"
+            ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true && !root.child('bull-lab/world/closed').child($id).exists()"
+          }
+        },
+        "closed": {
+          "$id": {
+            ".validate": "newData.hasChildren(['id', 'founderId', 'at', 'clientBuild']) && newData.child('clientBuild').val() === '20260904d' && newData.child('id').isString() && newData.child('founderId').isString() && newData.child('at').isNumber()"
           }
         },
         "players": {

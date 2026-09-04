@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904m">
+  <link rel="stylesheet" href="style.css?v=20260904n">
 </head>
 <body>
   <header class="site-header">
@@ -108,6 +108,7 @@
         <ol class="rank-strip" id="rank-strip" aria-label="자산 TOP 5"></ol>
         <div class="room-actions">
           <button type="button" id="found-button">회사 설립</button>
+          <button type="button" id="close-button" class="close-firm">폐업</button>
           <button type="button" id="lend-button">대출회사</button>
           <button type="button" id="ad-button">광고 집행</button>
         </div>
@@ -401,7 +402,7 @@
       <button class="modal-x" data-close="found" type="button" aria-label="닫기">×</button>
       <span class="overline">IPO DESK</span>
       <h2 id="found-title">회사 설립</h2>
-      <p>시드 현금으로 상장합니다. 창업 주식은 당신 몫이고, 다른 투자자가 사고팔 수 있습니다. 계정당 1회.</p>
+      <p>시드 현금으로 상장합니다. 한 번에 한 곳만 운영할 수 있고, 폐업하면 새로 만들 수 있습니다. 폐업 시 투자금은 반환되지 않습니다.</p>
       <form class="found-form" id="found-form">
         <label>상호<input id="found-name" maxlength="12" required placeholder="예: 새벽물산"></label>
         <label>티커<input id="found-symbol" maxlength="4" required placeholder="2–4자 영문"></label>
@@ -410,6 +411,18 @@
         <p class="form-error" id="found-error" hidden></p>
         <button class="cta-button setup-start" type="submit">상장하기 <span>→</span></button>
       </form>
+    </section>
+  </div>
+
+  <div class="modal" id="close-modal" hidden>
+    <div class="modal-backdrop" data-close="close"></div>
+    <section class="setup-panel found-panel" role="dialog" aria-modal="true" aria-labelledby="close-title">
+      <button class="modal-x" data-close="close" type="button" aria-label="닫기">×</button>
+      <span class="overline">SHUTDOWN</span>
+      <h2 id="close-title">회사 폐업</h2>
+      <p id="close-lead">폐업하면 이 회사 주식은 즉시 사라집니다. 산 사람은 돈을 돌려받지 못하고, 창업 시드와 남은 지분도 현금으로 바뀌지 않습니다. 이후 새 회사를 만들 수 있습니다.</p>
+      <p class="form-error" id="close-error" hidden></p>
+      <button class="cta-button setup-start close-firm" id="close-confirm" type="button">폐업하기 <span>→</span></button>
     </section>
   </div>
 
@@ -517,6 +530,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260904m"></script>
+  <script src="game.js?v=20260904n"></script>
 </body>
 </html>

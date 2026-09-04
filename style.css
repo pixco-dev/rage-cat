@@ -2494,6 +2494,12 @@ body.modal-open {
   opacity: .45;
 }
 
+.room-actions button.close-firm,
+.cta-button.close-firm {
+  color: var(--white);
+  background: var(--red);
+}
+
 .room-code-wrap button {
   background: transparent;
   color: #9aa59e;

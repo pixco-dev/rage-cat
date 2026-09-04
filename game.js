@@ -677,6 +677,7 @@
     rankStrip: $("#rank-strip"),
     rankList: $("#rank-list"),
     foundButton: $("#found-button"),
+    closeButton: $("#close-button"),
     lendButton: $("#lend-button"),
     adButton: $("#ad-button"),
     foundModal: $("#found-modal"),
@@ -686,6 +687,10 @@
     foundSector: $("#found-sector"),
     foundSeed: $("#found-seed"),
     foundError: $("#found-error"),
+    closeModal: $("#close-modal"),
+    closeLead: $("#close-lead"),
+    closeError: $("#close-error"),
+    closeConfirm: $("#close-confirm"),
     lendModal: $("#lend-modal"),
     lendForm: $("#lend-form"),
     lendTitle: $("#lend-title"),
@@ -787,6 +792,7 @@
     lastToastAt: 0,
     entering: false,
     inMarket: false,
+    closed: {},
     appliedPeriodId: "",
     settling: false,
     db: null,
@@ -1104,6 +1110,7 @@
       chatRooms: listFromMap(val.chatRooms || meta.chatRooms).map(normalizeChatRoom).filter(Boolean),
       lenders: listFromMap(val.lenders || meta.lenders),
       loans: listFromMap(val.loans || meta.loans),
+      closed: listFromMap(val.closed || meta.closed),
     };
   }
 
@@ -1126,6 +1133,25 @@
       if (!asset?.id) return;
       if (!worldSync.needsSeed && !worldSync.touched.has(asset.id)) return;
       updates[`assets/${safeFbKey(asset.id)}`] = publicAsset(asset);
+    });
+    [...worldSync.touched].forEach((key) => {
+      if (!String(key).startsWith("close:")) return;
+      const id = String(key).slice(6);
+      if (!id) return;
+      const row = worldSync.closed?.[id];
+      updates[`assets/${safeFbKey(id)}`] = null;
+      updates[`ads/${safeFbKey(id)}`] = null;
+      if (row) {
+        updates[`closed/${safeFbKey(id)}`] = {
+          id: row.id || id,
+          founderId: row.founderId || "",
+          founderName: row.founderName || "",
+          name: row.name || "",
+          symbol: row.symbol || "",
+          at: Number(row.at) || Date.now(),
+          clientBuild: CLIENT_BUILD,
+        };
+      }
     });
     (payload.players || []).filter((player) => player?.id === state?.playerId).forEach((player) => {
       if (!player?.id || isBanned(player.id)) return;
@@ -2482,6 +2508,7 @@
       ejectHalted();
       return { ok: false, err: "locked" };
     }
+    if (worldSync.closed?.[assetId]) return { ok: false, err: "locked" };
     const localAsset = assetById(assetId);
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
@@ -2528,6 +2555,73 @@
     }
   }
 
+  function dropAssetEverywhere(id) {
+    if (!id || !state) return;
+    state.assets = (state.assets || []).filter((asset) => asset.id !== id);
+    if (state.holdings) delete state.holdings[id];
+    (state.players || []).forEach((player) => {
+      if (player?.holdings) delete player.holdings[id];
+      if (player?.founded?.assetId === id) player.founded = null;
+    });
+    state.ads = (state.ads || []).filter((ad) => ad.assetId !== id);
+    if (selectedChartId === id) selectedChartId = "";
+  }
+
+  function rememberClosed(row) {
+    if (!row?.id) return;
+    worldSync.closed = worldSync.closed || {};
+    worldSync.closed[row.id] = { ...worldSync.closed[row.id], ...row, id: row.id };
+    dropAssetEverywhere(row.id);
+  }
+
+  function applyClosedRecords(rows) {
+    worldSync.closed = worldSync.closed || {};
+    listFromMap(rows).forEach(rememberClosed);
+    Object.keys(worldSync.closed).forEach((id) => dropAssetEverywhere(id));
+    (state.players || []).forEach((player) => {
+      if (player?.founded?.assetId && worldSync.closed[player.founded.assetId]) player.founded = null;
+    });
+    if (state.founded?.assetId && (worldSync.closed[state.founded.assetId] || !assetById(state.founded.assetId))) {
+      state.founded = null;
+    }
+  }
+
+  function nextCompanyId(ownerId) {
+    const base = `co-${ownerId}`;
+    if (!assetById(base) && !worldSync.closed?.[base]) return base;
+    for (let n = 2; n < 80; n += 1) {
+      const id = `${base}-${n}`;
+      if (!assetById(id) && !worldSync.closed?.[id]) return id;
+    }
+    return `${base}-${Date.now().toString(36)}`;
+  }
+
+  function closeCompany() {
+    const founded = state.founded;
+    if (!founded?.assetId) return { ok: false, err: "missing" };
+    const asset = assetById(founded.assetId);
+    if (!asset || asset.founderId !== state.playerId) return { ok: false, err: "missing" };
+    const id = asset.id;
+    const holding = ensureHolding(state.holdings, id);
+    const lost = round1((Number(holding.qty) || 0) * (Number(asset.price) || 0));
+    worldSync.closed = worldSync.closed || {};
+    worldSync.closed[id] = {
+      id,
+      founderId: state.playerId,
+      founderName: state.playerName || state.playerId,
+      name: asset.name,
+      symbol: asset.symbol,
+      at: Date.now(),
+    };
+    dropAssetEverywhere(id);
+    state.founded = null;
+    const player = (state.players || []).find((item) => item.id === state.playerId);
+    if (player) player.founded = null;
+    syncLocalPlayer();
+    markTouched(`close:${id}`);
+    return { ok: true, name: asset.name, symbol: asset.symbol, lost };
+  }
+
   function listCompany(spec) {
     const { ownerId, ownerName, name, symbol, sectorKey, seed } = spec;
     const owner = getActor(ownerId);
@@ -2548,8 +2642,8 @@
     const founderQty = Math.max(8, Math.ceil(spend / 76));
     const price = Math.max(10, Math.min(76, Math.floor((spend / founderQty) * 10) / 10));
     const cost = round1(founderQty * price);
-    const id = `co-${ownerId}`;
-    if (state.assets.some((asset) => asset.id === id)) return { ok: false, err: "once" };
+    const id = nextCompanyId(ownerId);
+    if (state.assets.some((asset) => asset.id === id) || worldSync.closed?.[id]) return { ok: false, err: "once" };
     const asset = {
       id,
       symbol: ticker,
@@ -3329,6 +3423,7 @@
       })),
       lenders: (state.lenders || []).map(publicLender).filter(Boolean),
       loans: (state.loans || []).map(publicLoan).filter(Boolean),
+      closed: Object.values(worldSync.closed || {}).filter((row) => row?.id),
     };
   }
 
@@ -3396,10 +3491,12 @@
     });
     worldSync.seenPlayers = [...seen.values()];
     mergeChatRooms(remote.chatRooms);
+    applyClosedRecords(remote.closed);
 
     const byId = new Map(state.assets.map((asset) => [asset.id, asset]));
     (remote.assets || []).forEach((row) => {
       if (!row?.id) return;
+      if (worldSync.closed?.[row.id]) return;
       if (row.bot || String(row.founderId || "").startsWith("bot-") || String(row.id || "").startsWith("co-bot")) return;
       const local = byId.get(row.id);
       if (!local) {
@@ -3458,8 +3555,10 @@
     mergeLoans(remote.loans, preferLocal);
     purgeBots();
     ensureCoreListings();
+    applyClosedRecords(remote.closed);
 
     state.assets.forEach((asset) => ensureHolding(state.holdings, asset.id));
+    if (state.founded?.assetId && !assetById(state.founded.assetId)) state.founded = null;
     if (state.assets.some((asset) => asset.founderId === state.playerId)) {
       const mine = state.assets.find((asset) => asset.founderId === state.playerId);
       state.founded = state.founded || { assetId: mine.id, name: mine.name, symbol: mine.symbol, sectorKey: mine.sectorKey, seed: 0 };
@@ -4276,7 +4375,7 @@
       return;
     }
     if (state.founded) {
-      toast("🏢", "이미 설립함", "회사는 계정당 한 곳만 상장할 수 있습니다.");
+      toast("🏢", "이미 설립함", "한 곳에 한 회사만 운영할 수 있습니다. 새로 만들려면 먼저 폐업하세요.");
       return;
     }
     els.foundError.hidden = true;
@@ -4288,6 +4387,39 @@
     els.foundSeed.value = String(Math.min(Math.max(MIN_SEED, availableSeed), suggestedSeed));
     fillFoundSectors();
     openModal(els.foundModal);
+  }
+
+  function openCloseModal() {
+    if (!state?.active) {
+      toast("📈", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
+    if (!state.founded) {
+      toast("🏢", "회사 없음", "폐업할 회사가 없습니다.");
+      return;
+    }
+    const asset = assetById(state.founded.assetId);
+    const name = asset?.name || state.founded.name || "회사";
+    const symbol = asset?.symbol || state.founded.symbol || "";
+    if (els.closeLead) {
+      els.closeLead.textContent = `${name}${symbol ? `(${symbol})` : ""}를 폐업하면 이 회사 주식은 즉시 사라집니다. 산 사람은 돈을 돌려받지 못하고, 창업 시드와 남은 지분도 현금으로 바뀌지 않습니다. 이후 새 회사를 만들 수 있습니다.`;
+    }
+    if (els.closeError) els.closeError.hidden = true;
+    openModal(els.closeModal);
+  }
+
+  function submitCloseCompany() {
+    const result = closeCompany();
+    if (!result.ok) {
+      if (els.closeError) {
+        els.closeError.hidden = false;
+        els.closeError.textContent = result.err === "missing" ? "폐업할 회사가 없습니다." : "폐업하지 못했습니다.";
+      }
+      return;
+    }
+    closeModal(els.closeModal);
+    toast("🏚️", "폐업", `${result.name}(${result.symbol}) 상장 폐지 · 내 지분 ${money(result.lost)} 소각 · 투자금 반환 없음`);
+    renderAll();
   }
 
   function openAdModal() {
@@ -4517,7 +4649,7 @@
     const result = listCompany(spec);
     if (!result.ok) {
       const map = {
-        once: "이미 회사를 보유하고 있습니다.",
+        once: "이미 회사를 운영 중입니다. 새로 만들려면 먼저 폐업하세요.",
         ticker: "티커는 영문 2–4자입니다.",
         dup: "이미 있는 티커입니다.",
         name: "상호를 2자 이상 입력하세요.",
@@ -4614,6 +4746,12 @@
       els.foundButton.disabled = false;
       els.foundButton.classList.toggle("is-off", off);
       els.foundButton.setAttribute("aria-disabled", off ? "true" : "false");
+    }
+    if (els.closeButton) {
+      const off = closed || !state.founded;
+      els.closeButton.disabled = false;
+      els.closeButton.classList.toggle("is-off", off);
+      els.closeButton.setAttribute("aria-disabled", off ? "true" : "false");
     }
     if (els.lendButton) {
       els.lendButton.disabled = false;
@@ -6089,7 +6227,7 @@
   }
 
   function allModals() {
-    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.lendModal, els.borrowModal, els.adModal].filter(Boolean);
+    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.closeModal, els.lendModal, els.borrowModal, els.adModal].filter(Boolean);
   }
 
   function closeModal(modal) {
@@ -6186,6 +6324,9 @@
   $$("[data-close='found']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.foundModal));
   });
+  $$("[data-close='close']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.closeModal));
+  });
   $$("[data-close='lend']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.lendModal));
   });
@@ -6233,6 +6374,8 @@
     enterGlobalMarket();
   });
   els.foundButton?.addEventListener("click", openFoundModal);
+  els.closeButton?.addEventListener("click", openCloseModal);
+  els.closeConfirm?.addEventListener("click", submitCloseCompany);
   els.lendButton?.addEventListener("click", openLendModal);
   els.adButton?.addEventListener("click", openAdModal);
   els.foundForm?.addEventListener("submit", submitFound);
@@ -6350,6 +6493,7 @@
     if (event.key === "Escape" && !els.authModal.hidden) closeModal(els.authModal);
     if (event.key === "Escape" && !els.lobbyModal.hidden) closeModal(els.lobbyModal);
     if (event.key === "Escape" && !els.foundModal.hidden) closeModal(els.foundModal);
+    if (event.key === "Escape" && !els.closeModal?.hidden) closeModal(els.closeModal);
     if (event.key === "Escape" && !els.lendModal?.hidden) closeModal(els.lendModal);
     if (event.key === "Escape" && !els.borrowModal?.hidden) closeModal(els.borrowModal);
     if (event.key === "Escape" && !els.adModal.hidden) closeModal(els.adModal);
