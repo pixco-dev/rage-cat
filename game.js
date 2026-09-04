@@ -30,6 +30,7 @@
   const PUT_DEBOUNCE_MS = 450;
   const FIREBASE_READ_TIMEOUT_MS = 1800;
   const FIREBASE_WRITE_TIMEOUT_MS = 4500;
+  const MAX_AD_IMAGE_DATA_LENGTH = 60000;
   const ACTIVITY_PASS_SCORE = 0.65;
   const TICK_MS = 1000;
   const TICK_CAP = 96;
@@ -939,6 +940,10 @@
   function worldFromFirebase(val) {
     if (!val || typeof val !== "object") return null;
     const meta = val.meta && typeof val.meta === "object" ? val.meta : val;
+    const assets = listFromMap(val.assets || meta.assets).map((asset) => ({
+      ...asset,
+      ad: asset.ad ? { ...asset.ad, image: safeImageUrl(asset.ad.image) } : asset.ad,
+    }));
     return {
       revision: meta.revision || 0,
       updatedAt: meta.updatedAt || 0,
@@ -949,8 +954,8 @@
       eventDeck: meta.eventDeck || val.eventDeck || [],
       event: meta.event || val.event,
       botsSpawned: false,
-      assets: listFromMap(val.assets || meta.assets),
-      ads: listFromMap(val.ads || meta.ads),
+      assets,
+      ads: listFromMap(val.ads || meta.ads).map((ad) => ({ ...ad, image: "" })),
       players: listFromMap(val.players || meta.players),
       seenPlayers: listFromMap(val.seenPlayers || meta.seenPlayers),
       chatRooms: listFromMap(val.chatRooms || meta.chatRooms).map(normalizeChatRoom).filter(Boolean),
@@ -1280,7 +1285,7 @@
 
   function safeImageUrl(value) {
     const url = String(value || "");
-    return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(url) ? url : "";
+    return url.length <= MAX_AD_IMAGE_DATA_LENGTH && /^data:image\/(?:png|jpe?g|webp);base64,/i.test(url) ? url : "";
   }
 
   function makeId(prefix) {
@@ -1776,7 +1781,7 @@
     const sec = Math.floor((kstClock.ok ? kstNowMs() : Date.now()) / 1000);
     const unit = hashUnit(`${asset.id}:${sec}`) * 2 - 1;
     const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
-    const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.4 : 1);
+    const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.65 : 1);
     const wiggle = flow * 0.01 + unit * noise * 0.055;
     return Math.max(5, round1(asset.price * (1 + Math.max(-0.018, Math.min(0.018, wiggle)))));
   }
@@ -2048,7 +2053,7 @@
   }
 
   function rollCompanyOps(asset) {
-    const shock = (random() * 2 - 1) * 0.07 + 0.022;
+    const shock = (random() * 2 - 1) * 0.085 + 0.006;
     const up = ["주간 매출이 예상보다 단단했습니다.", "신규 주문이 늘었습니다.", "고정비를 잘 막았습니다."];
     const down = ["고정비가 발목을 잡았습니다.", "수주가 한 박자 밀렸습니다.", "재고가 조금 쌓였습니다."];
     const flat = ["큰 이슈 없이 운영됐습니다.", "현금흐름은 평범했습니다.", "광고와 별개로 현장은 조용했습니다."];
@@ -2095,7 +2100,7 @@
       week: state.week,
       season: state.season,
       owner: playerId,
-      image: image || "",
+      image: safeImageUrl(image),
     };
     asset.adWeeks = (asset.adWeeks || 0) + 1;
     state.ads = state.assets.filter((item) => item.ad && item.ad.week === state.week && item.ad.season === state.season).map((item) => ({
@@ -2417,7 +2422,7 @@
       founderName: asset.founderName,
       trust: asset.trust,
       adWeeks: asset.adWeeks,
-      ad: asset.ad,
+      ad: asset.ad ? { ...asset.ad, image: safeImageUrl(asset.ad.image) } : null,
       opsNote: asset.opsNote,
       opsShock: asset.opsShock || 0,
     };
@@ -2648,11 +2653,13 @@
   }
 
   function slimWorldPayload(payload) {
-    const stripAd = (ad) => (ad ? { ...ad, image: "" } : ad);
     return {
       ...payload,
       ads: (payload.ads || []).map((ad) => ({ ...ad, image: "" })),
-      assets: (payload.assets || []).map((asset) => ({ ...asset, ad: stripAd(asset.ad) })),
+      assets: (payload.assets || []).map((asset) => ({
+        ...asset,
+        ad: asset.ad ? { ...asset.ad, image: safeImageUrl(asset.ad.image) } : asset.ad,
+      })),
     };
   }
 
@@ -3232,7 +3239,7 @@
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
-        const max = 400;
+        const max = 360;
         let w = img.width;
         let h = img.height;
         if (w > max || h > max) {
@@ -3240,16 +3247,28 @@
           w = Math.round(w * scale);
           h = Math.round(h * scale);
         }
-        const canvas = document.createElement("canvas");
+        let canvas = document.createElement("canvas");
         canvas.width = w;
         canvas.height = h;
         canvas.getContext("2d").drawImage(img, 0, 0, w, h);
         URL.revokeObjectURL(url);
-        let quality = 0.6;
+        let quality = 0.58;
         let data = canvas.toDataURL("image/jpeg", quality);
-        while (data.length > 80000 && quality > 0.28) {
+        while (data.length > MAX_AD_IMAGE_DATA_LENGTH && quality > 0.3) {
           quality -= 0.1;
           data = canvas.toDataURL("image/jpeg", quality);
+        }
+        while (data.length > MAX_AD_IMAGE_DATA_LENGTH && canvas.width > 120 && canvas.height > 120) {
+          const smaller = document.createElement("canvas");
+          smaller.width = Math.max(120, Math.round(canvas.width * 0.8));
+          smaller.height = Math.max(120, Math.round(canvas.height * 0.8));
+          smaller.getContext("2d").drawImage(canvas, 0, 0, smaller.width, smaller.height);
+          canvas = smaller;
+          data = canvas.toDataURL("image/jpeg", 0.3);
+        }
+        if (data.length > MAX_AD_IMAGE_DATA_LENGTH) {
+          reject(new Error("image-size"));
+          return;
         }
         resolve(data);
       };
