@@ -16,6 +16,11 @@
         }
       },
       "world": {
+        "assets": {
+          "$id": {
+            ".validate": "!data.exists() || newData.child('price').val() === data.child('price').val() || newData.child('clientBuild').val() === '20260904c'"
+          }
+        },
         "chatRooms": {
           "$room": {
             "messages": {

@@ -8,6 +8,7 @@
   const AD_COST = 18;
   const MIN_SEED = 80;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
+  const CLIENT_BUILD = "20260904c";
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
   const DEFAULT_FIREBASE_CONFIG = {
@@ -733,6 +734,7 @@
     kstTimer: null,
     chartTimer: null,
     presenceTimer: null,
+    buildTimer: null,
     touched: new Set(),
     chatRooms: [],
     seenPlayers: [],
@@ -1938,6 +1940,7 @@
     const fillPrice = Math.max(5, round1(currentPrice * (1 + impact)));
     if (live) asset.price = fillPrice;
     asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
+    asset.clientBuild = CLIENT_BUILD;
     return { asset, fillPrice };
   }
 
@@ -2187,12 +2190,14 @@
     if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
     if (worldSync.chartTimer) clearInterval(worldSync.chartTimer);
     if (worldSync.presenceTimer) clearInterval(worldSync.presenceTimer);
+    if (worldSync.buildTimer) clearInterval(worldSync.buildTimer);
     if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
     worldSync.pollTimer = null;
     worldSync.clockTimer = null;
     worldSync.kstTimer = null;
     worldSync.chartTimer = null;
     worldSync.presenceTimer = null;
+    worldSync.buildTimer = null;
     worldSync.putTimer = null;
   }
 
@@ -2453,6 +2458,7 @@
       ad: asset.ad ? { ...asset.ad, image: safeImageUrl(asset.ad.image) } : null,
       opsNote: asset.opsNote,
       opsShock: asset.opsShock || 0,
+      clientBuild: CLIENT_BUILD,
     };
   }
 
@@ -3181,6 +3187,15 @@
       updateLiveCharts();
     }, TICK_MS);
     window.addEventListener("focus", onWorldFocus);
+    watchClientBuild();
+    if (worldSync.buildTimer) clearInterval(worldSync.buildTimer);
+    worldSync.buildTimer = setInterval(watchClientBuild, 20000);
+  }
+
+  function watchClientBuild() {
+    fetch(`build.json?t=${Date.now()}`, { cache: "no-store" }).then((res) => res.json()).then((row) => {
+      if (row?.build && String(row.build) !== CLIENT_BUILD) location.reload();
+    }).catch(() => {});
   }
 
   function onWorldFocus() {
