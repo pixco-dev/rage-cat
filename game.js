@@ -757,6 +757,7 @@
     db: null,
     applyingRemote: false,
     unsub: null,
+    tradeLockUntil: 0,
   };
   const kstClock = {
     ok: false,
@@ -1658,6 +1659,8 @@
         initialCash: state.initialCash,
         modeKey: state.modeKey,
         research: state.research,
+        energy: state.energy,
+        energyMax: state.energyMax,
         missions: [...state.missions],
         badges: [...state.badges],
         trades: state.trades,
@@ -1667,6 +1670,17 @@
         playCount: state.playCount,
         profitableSales: state.profitableSales,
         cashSafeWeeks: state.cashSafeWeeks,
+        activityWeek: activityWeekKey(),
+        week: state.week,
+        season: state.season,
+        jobsDone: [...(state.jobsDone || [])],
+        intelDone: [...(state.intelDone || [])],
+        playDone: [...(state.playDone || [])],
+        weekJobIds: (state.weekJobs || []).map((item) => item.id),
+        weekPlayIds: (state.weekPlays || []).map((item) => item.id),
+        adDone: !!state.adDone,
+        analyzed: [...(state.analyzed || [])],
+        intel: state.intel && typeof state.intel === "object" ? state.intel : {},
         updatedAt: Date.now(),
       };
       localStorage.setItem(WALLET_STORE, JSON.stringify(all));
@@ -1686,6 +1700,7 @@
     if (Number.isFinite(row.laborIncome)) state.laborIncome = row.laborIncome;
     if (Number.isFinite(row.initialCash)) state.initialCash = row.initialCash;
     if (Number.isFinite(row.research)) state.research = row.research;
+    applyWeekActivity(row);
     if (Number.isFinite(row.trades)) state.trades = row.trades;
     if (Number.isFinite(row.analyses)) state.analyses = row.analyses;
     if (Number.isFinite(row.jobsCount)) state.jobsCount = row.jobsCount;
@@ -1762,12 +1777,18 @@
     }
   }
 
-  function applyFlow(asset, signedQty) {
+  function flowImpact(asset, signedQty) {
     const float = Math.max(40, asset.float || 400);
-    const k = asset.playerCompany ? 0.85 : 0.3;
-    const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * k));
-    asset.price = Math.max(5, round1(asset.price * (1 + impact)));
+    const k = isSchoolListing(asset) ? 0.85 : 0.3;
+    const signed = signedQty >= 0 ? 1 : -1;
+    const mag = Math.max(0.004, Math.min(0.1, Math.abs((signedQty / float) * k)));
+    return signed * mag;
+  }
+
+  function applyFlow(asset, signedQty) {
     asset.weekFlow = (asset.weekFlow || 0) + signedQty;
+    if (!isSchoolListing(asset)) return;
+    asset.price = Math.max(5, round1(asset.price * (1 + flowImpact(asset, signedQty))));
     pushTick(asset);
   }
 
@@ -1874,9 +1895,14 @@
     const asset = assetById(assetId);
     qty = Math.floor(Number(qty) || 0);
     if (!actor || !asset || qty < 1 || !state.active) return { ok: false, err: "locked" };
+    if (actor.isLocal && Date.now() < (worldSync.tradeLockUntil || 0)) return { ok: false, err: "busy" };
     const holding = ensureHolding(actor.holdings, assetId);
+    const signedQty = side === "buy" ? qty : -qty;
+    const px = isSchoolListing(asset)
+      ? Math.max(5, round1(asset.price * (1 + flowImpact(asset, signedQty))))
+      : asset.price;
     if (side === "buy") {
-      const cost = asset.price * qty;
+      const cost = round1(px * qty);
       if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
       holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
       holding.qty += qty;
@@ -1885,15 +1911,17 @@
       if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
     } else {
       if (qty > holding.qty) return { ok: false, err: "qty" };
-      const proceeds = asset.price * qty;
-      if (actor.isLocal && asset.price > holding.avg) state.profitableSales += 1;
+      const proceeds = round1(px * qty);
+      if (actor.isLocal && px > holding.avg) state.profitableSales += 1;
       holding.qty -= qty;
       actor.cash = round1(actor.cash + proceeds);
       if (holding.qty === 0) holding.avg = 0;
       applyFlow(asset, -qty);
       if (actor.isLocal && !options.silent) recordTrade("sell", asset, qty, proceeds);
     }
+    if (actor.isLocal) worldSync.tradeLockUntil = Date.now() + 320;
     syncLocalPlayer();
+    writeWallet();
     if (state.active) markTouched(assetId);
     return { ok: true };
   }
@@ -1904,13 +1932,13 @@
       : JSON.parse(JSON.stringify(publicAsset(fallback)));
     const currentPrice = Number(asset.price);
     if (!(currentPrice > 0)) return null;
-    const float = Math.max(40, Number(asset.float) || 400);
-    const impactK = asset.playerCompany ? 0.85 : 0.3;
     const signedQty = side === "buy" ? qty : -qty;
-    const impact = Math.max(-0.1, Math.min(0.1, (signedQty / float) * impactK));
-    asset.price = Math.max(5, round1(currentPrice * (1 + impact)));
+    const live = isSchoolListing(asset);
+    const impact = live ? flowImpact(asset, signedQty) : 0;
+    const fillPrice = Math.max(5, round1(currentPrice * (1 + impact)));
+    if (live) asset.price = fillPrice;
     asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
-    return { asset, fillPrice: currentPrice };
+    return { asset, fillPrice };
   }
 
   async function tradeAssetWithRest(assetId, side, qty, localAsset) {
@@ -2738,10 +2766,13 @@
     worldSync.applyingRemote = true;
     try {
       const before = totalAssets();
+      const weekBefore = activityWeekKey();
       const result = mergeWorld(remote, { preferLocal });
-      if (result.weekChanged) {
+      if (activityWeekKey() !== weekBefore) {
         computeWeekExpectations();
-        resetLocalWeek();
+        startWeekActivities(true);
+      } else if (result.weekChanged) {
+        computeWeekExpectations();
       }
       if (result.settled) showWeekResult(totalAssets() - before, totalAssets(), 0);
       ensureCoreListings();
@@ -3008,7 +3039,8 @@
         creditFounderOps(asset);
       }
       const newsChange = state.changes[asset.id] || 0;
-      let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange;
+      const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400) * (asset.playerCompany ? 0.2 : 0.3);
+      let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange + flow;
       if (!asset.playerCompany && Math.abs(extra) < 0.003) {
         extra = (extra >= 0 ? 1 : -1) * (0.004 + random() * 0.01);
       }
@@ -3583,6 +3615,34 @@
     }).join("");
   }
 
+  function activityWeekKey() {
+    return `s${state?.season || 1}-w${state?.week || 1}`;
+  }
+
+  function applyWeekActivity(row) {
+    if (!row || !state) return false;
+    const key = row.activityWeek || (Number.isFinite(row.season) && Number.isFinite(row.week) ? `s${row.season}-w${row.week}` : "");
+    if (key && key !== activityWeekKey()) return false;
+    if (Number.isFinite(Number(row.energy))) {
+      state.energy = Math.max(0, Math.min(state.energyMax, Math.floor(Number(row.energy))));
+    }
+    if (Array.isArray(row.jobsDone)) state.jobsDone = new Set(row.jobsDone);
+    if (Array.isArray(row.intelDone)) state.intelDone = new Set(row.intelDone);
+    if (Array.isArray(row.playDone)) state.playDone = new Set(row.playDone);
+    const jobsById = Object.fromEntries(JOBS.map((item) => [item.id, item]));
+    const playsById = Object.fromEntries(PLAYS.map((item) => [item.id, item]));
+    if (Array.isArray(row.weekJobIds) && row.weekJobIds.length) {
+      state.weekJobs = row.weekJobIds.map((id) => jobsById[id]).filter(Boolean);
+    }
+    if (Array.isArray(row.weekPlayIds) && row.weekPlayIds.length) {
+      state.weekPlays = row.weekPlayIds.map((id) => playsById[id]).filter(Boolean);
+    }
+    if (typeof row.adDone === "boolean") state.adDone = row.adDone;
+    if (Array.isArray(row.analyzed)) state.analyzed = new Set(row.analyzed);
+    if (row.intel && typeof row.intel === "object") state.intel = row.intel;
+    return true;
+  }
+
   function resetLocalWeek() {
     state.analyzed = new Set();
     state.intel = {};
@@ -3594,6 +3654,17 @@
     state.weekPlays = shuffled(PLAYS).slice(0, 5);
     state.adDone = false;
     state.locked = false;
+  }
+
+  function startWeekActivities(fresh = false) {
+    if (!fresh && applyWeekActivity(readWallet(state.playerId))) {
+      if (!state.weekJobs.length) state.weekJobs = shuffled(JOBS).slice(0, 4);
+      if (!state.weekPlays.length) state.weekPlays = shuffled(PLAYS).slice(0, 5);
+      writeWallet();
+      return;
+    }
+    resetLocalWeek();
+    writeWallet();
   }
 
   function beginLocalGame() {
@@ -3608,7 +3679,7 @@
     if (!state.event) prepareWeek();
     else {
       computeWeekExpectations();
-      resetLocalWeek();
+      startWeekActivities(false);
       state.ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season).map((asset) => ({
         assetId: asset.id,
         symbol: asset.symbol,
@@ -3664,7 +3735,7 @@
     state.event = state.eventDeck[state.week - 1] || shuffled(EVENTS)[0];
     state.expected = {};
     state.changes = {};
-    resetLocalWeek();
+    startWeekActivities(false);
     state.assets.forEach((asset) => {
       asset.weekOpen = asset.price;
       asset.weekFlow = 0;
@@ -4184,6 +4255,7 @@
       return false;
     }
     state.energy -= amount;
+    writeWallet();
     return true;
   }
 
