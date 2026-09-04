@@ -8,7 +8,7 @@
   const AD_COST = 18;
   const MIN_SEED = 80;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
-  const CLIENT_BUILD = "20260904c";
+  const CLIENT_BUILD = "20260904d";
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
   const DEFAULT_FIREBASE_CONFIG = {
@@ -977,6 +977,7 @@
         eventDeck: payload.eventDeck || [],
         event: payload.event || null,
         botsSpawned: false,
+        clientBuild: CLIENT_BUILD,
       },
     };
     (payload.assets || []).forEach((asset) => {
@@ -1086,6 +1087,7 @@
       total: player.id === state.playerId ? totalAssets() : (cash || 0) + holdingsValueOf(holdings),
       bot: false,
       updatedAt: Date.now(),
+      clientBuild: CLIENT_BUILD,
     };
   }
 

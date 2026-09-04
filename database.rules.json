@@ -16,9 +16,17 @@
         }
       },
       "world": {
+        "meta": {
+          ".validate": "newData.child('clientBuild').val() === '20260904d'"
+        },
         "assets": {
           "$id": {
-            ".validate": "!data.exists() || newData.child('price').val() === data.child('price').val() || newData.child('clientBuild').val() === '20260904c'"
+            ".validate": "newData.child('clientBuild').val() === '20260904d'"
+          }
+        },
+        "players": {
+          "$id": {
+            ".validate": "newData.child('clientBuild').val() === '20260904d'"
           }
         },
         "chatRooms": {
