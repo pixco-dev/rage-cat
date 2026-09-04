@@ -7,8 +7,16 @@
   const WALLET_STORE = "bull-lab-wallets-v1";
   const AD_COST = 18;
   const MIN_SEED = 80;
+  const MIN_LEND_SEED = 40;
+  const MIN_BORROW = 10;
+  const MAX_BORROW = 250;
+  const MIN_LEND_RATE = 1;
+  const MAX_LEND_RATE = 15;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
   const CLIENT_BUILD = "20260904d";
+  const BAN_PATH = "bull-lab/bans";
+  const MOD_STORE = "bull-lab-mod-v1";
+  const WEALTH_SANITY = 50000;
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
   const FIREBASE_SETTLEMENT_PATH = "bull-lab/settlements";
   const DEFAULT_FIREBASE_CONFIG = {
@@ -663,7 +671,9 @@
     playerCount: $("#player-count"),
     rankStrip: $("#rank-strip"),
     rankList: $("#rank-list"),
+    rankModArm: $("#rank-mod-arm"),
     foundButton: $("#found-button"),
+    lendButton: $("#lend-button"),
     adButton: $("#ad-button"),
     foundModal: $("#found-modal"),
     foundForm: $("#found-form"),
@@ -672,6 +682,21 @@
     foundSector: $("#found-sector"),
     foundSeed: $("#found-seed"),
     foundError: $("#found-error"),
+    lendModal: $("#lend-modal"),
+    lendForm: $("#lend-form"),
+    lendTitle: $("#lend-title"),
+    lendName: $("#lend-name"),
+    lendRate: $("#lend-rate"),
+    lendSeed: $("#lend-seed"),
+    lendError: $("#lend-error"),
+    lendList: $("#lend-list"),
+    lendDebt: $("#lend-debt"),
+    borrowModal: $("#borrow-modal"),
+    borrowForm: $("#borrow-form"),
+    borrowTitle: $("#borrow-title"),
+    borrowLead: $("#borrow-lead"),
+    borrowAmount: $("#borrow-amount"),
+    borrowError: $("#borrow-error"),
     adModal: $("#ad-modal"),
     adForm: $("#ad-form"),
     adSlogan: $("#ad-slogan"),
@@ -707,6 +732,11 @@
   let authMode = "login";
   let authNext = "setup";
   let pendingAdImage = "";
+  let pendingBorrowLenderId = "";
+  let pendingLendAction = "";
+  let banMap = {};
+  let isMod = false;
+  let modArmClicks = 0;
   let activeChatRoomId = "";
   let selectedChartId = "";
   const clientId = (() => {
@@ -759,6 +789,7 @@
     db: null,
     applyingRemote: false,
     unsub: null,
+    banUnsub: null,
     tradeLockUntil: 0,
   };
   const kstClock = {
@@ -927,6 +958,119 @@
     }).filter(Boolean);
   }
 
+  function isBanned(id) {
+    return !!(id && banMap[id]);
+  }
+
+  function isHiddenWealth(player) {
+    if (!player || isBanned(player.id)) return true;
+    const cash = Number(player.cash) || 0;
+    const total = Number(player.total) || 0;
+    return cash > WEALTH_SANITY || total > WEALTH_SANITY;
+  }
+
+  function applyBanMap(value) {
+    banMap = {};
+    listFromMap(value).forEach((row) => {
+      const id = String(row?.id || "").trim();
+      if (id) banMap[id] = row;
+    });
+    if (isBanned(session?.id) || isBanned(state?.playerId)) ejectBanned();
+    renderRanking();
+  }
+
+  function readModFlag() {
+    try {
+      return localStorage.getItem(MOD_STORE) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function enableMod(silent) {
+    isMod = true;
+    try { localStorage.setItem(MOD_STORE, "1"); } catch { /* quota */ }
+    document.body.classList.add("is-mod");
+    if (!silent) toast("🛡️", "운영 모드", "순위표에서 강퇴할 수 있습니다. 복사 계좌는 공유 순위에서 빠집니다.");
+    renderRanking();
+  }
+
+  function ejectBanned() {
+    if (!isBanned(session?.id) && !isBanned(state?.playerId)) return;
+    if (state?.active || worldSync.inMarket) {
+      worldSync.inMarket = false;
+      if (state) state.active = false;
+      hideDesk();
+      stopWorldSync();
+      toast("🚫", "퇴장", "이 계좌는 강퇴되어 공유 시장에 들어갈 수 없습니다.");
+    }
+  }
+
+  async function fetchBans() {
+    try {
+      const response = await firebaseRestRequest(BAN_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return;
+      applyBanMap(await response.json());
+    } catch {
+      /* keep local bans */
+    }
+  }
+
+  function subscribeBans() {
+    const db = firebaseDb();
+    if (!db) {
+      fetchBans();
+      return;
+    }
+    if (worldSync.banUnsub) db.ref(BAN_PATH).off("value", worldSync.banUnsub);
+    const handler = (snap) => applyBanMap(snap.val());
+    db.ref(BAN_PATH).on("value", handler);
+    worldSync.banUnsub = handler;
+  }
+
+  function unsubscribeBans() {
+    const db = firebaseDb();
+    if (db && worldSync.banUnsub) db.ref(BAN_PATH).off("value", worldSync.banUnsub);
+    worldSync.banUnsub = null;
+  }
+
+  async function kickPlayer(id) {
+    if (!isMod) return;
+    const playerId = String(id || "").trim();
+    if (!playerId || playerId === session?.id || playerId === state?.playerId) {
+      toast("🛡️", "강퇴 불가", "자기 자신은 강퇴할 수 없습니다.");
+      return;
+    }
+    const player = (state.players || []).find((item) => item.id === playerId);
+    const label = player?.name || playerId;
+    if (!window.confirm(`${label} 계좌를 강퇴할까요?\n공유 순위에서 빠지고, 이 아이디로는 다시 못 들어옵니다.`)) return;
+    const key = safeFbKey(playerId);
+    const headers = { "Content-Type": "application/json" };
+    try {
+      await firebaseRestRequest(`${BAN_PATH}/${key}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          id: playerId,
+          name: label,
+          reason: "wealth-cheat",
+          at: Date.now(),
+          by: session?.id || "mod",
+        }),
+      });
+      await firebaseRestRequest(`${FIREBASE_WORLD_PATH}/players/${key}`, { method: "DELETE" });
+      await firebaseRestRequest(`${FIREBASE_WORLD_PATH}/lenders/${safeFbKey(`ln-${playerId}`)}`, { method: "DELETE" });
+      await firebaseRestRequest(`${FIREBASE_PRESENCE_PATH}/${key}`, { method: "DELETE" });
+    } catch {
+      toast("🛡️", "강퇴 실패", "공유 시장에 닿지 못했습니다. 잠시 후 다시 눌러 주세요.");
+      return;
+    }
+    banMap[playerId] = { id: playerId, name: label };
+    state.players = (state.players || []).filter((item) => item.id !== playerId);
+    toast("🚫", "강퇴", `${label}을 공유 시장에서 뺐습니다.`);
+    renderRanking();
+  }
+
   function normalizeChatRoom(room) {
     if (!room || typeof room !== "object") return null;
     return {
@@ -962,6 +1106,8 @@
       players: listFromMap(val.players || meta.players),
       seenPlayers: listFromMap(val.seenPlayers || meta.seenPlayers),
       chatRooms: listFromMap(val.chatRooms || meta.chatRooms).map(normalizeChatRoom).filter(Boolean),
+      lenders: listFromMap(val.lenders || meta.lenders),
+      loans: listFromMap(val.loans || meta.loans),
     };
   }
 
@@ -986,7 +1132,7 @@
       updates[`assets/${safeFbKey(asset.id)}`] = publicAsset(asset);
     });
     (payload.players || []).filter((player) => player?.id === state?.playerId).forEach((player) => {
-      if (!player?.id) return;
+      if (!player?.id || isBanned(player.id)) return;
       updates[`players/${safeFbKey(player.id)}`] = player;
     });
     (payload.seenPlayers || []).filter((item) => item?.id === state?.playerId).forEach((item) => {
@@ -996,6 +1142,19 @@
     (payload.ads || []).filter((ad) => worldSync.needsSeed || worldSync.touched.has(ad?.assetId)).forEach((ad, index) => {
       const key = safeFbKey(ad?.assetId || ad?.id || `ad-${index}`);
       updates[`ads/${key}`] = ad;
+    });
+    (payload.lenders || []).forEach((lender) => {
+      if (!lender?.id) return;
+      if (!worldSync.touched.has(`lend:${lender.id}`)) return;
+      const row = publicLender(lender);
+      if (row) updates[`lenders/${safeFbKey(lender.id)}`] = row;
+    });
+    (payload.loans || []).forEach((loan) => {
+      if (!loan?.id) return;
+      const mine = loan.borrowerId === state?.playerId || loan.lenderId === `ln-${state?.playerId}`;
+      if (!mine && !worldSync.touched.has(`loan:${loan.id}`)) return;
+      const row = publicLoan(loan);
+      if (row) updates[`loans/${safeFbKey(loan.id)}`] = row;
     });
     return updates;
   }
@@ -1041,12 +1200,15 @@
     return payload;
   }
 
-  function humansRanked() {
+  function humansRanked(options = {}) {
+    if (!state) return [];
     syncLocalPlayer();
+    const includeHidden = !!options.includeHidden;
     const byId = new Map();
     (state.players || []).forEach((player) => {
       if (!player?.id || player.bot || String(player.id).startsWith("bot-")) return;
       if (String(player.id).startsWith("guest-") && player.id !== state.playerId) return;
+      if (isBanned(player.id) && player.id !== state.playerId) return;
       byId.set(player.id, player);
     });
     const mine = state.players.find((item) => item.id === state.playerId);
@@ -1057,6 +1219,7 @@
         const total = player.id === state.playerId ? totalAssets() : playerTotal(player);
         return { ...player, total: Number.isFinite(total) ? total : 0 };
       })
+      .filter((player) => includeHidden || player.id === state.playerId || !isHiddenWealth(player))
       .sort((a, b) => {
         const dt = (b.total || 0) - (a.total || 0);
         if (dt !== 0) return dt;
@@ -1097,6 +1260,7 @@
       if (!row?.id || row.bot || String(row.id).startsWith("bot-")) return;
       if (String(row.id).startsWith("guest-")) return;
       if (row.id === state.playerId) return;
+      if (isBanned(row.id)) return;
       const next = {
         id: row.id,
         name: row.name || row.id,
@@ -1116,6 +1280,90 @@
     });
     purgeBots();
     syncLocalPlayer();
+  }
+
+  function publicLender(row) {
+    if (!row) return null;
+    const ownerId = String(row.ownerId || "");
+    const id = String(row.id || (ownerId ? `ln-${ownerId}` : ""));
+    if (!id) return null;
+    const rate = Math.max(MIN_LEND_RATE, Math.min(MAX_LEND_RATE, Math.round(Number(row.rate) || MIN_LEND_RATE)));
+    const pool = Math.max(0, round1(Number(row.pool) || 0));
+    return {
+      id,
+      name: String(row.name || "대출회사").trim().slice(0, 12) || "대출회사",
+      ownerId,
+      ownerName: String(row.ownerName || ownerId),
+      rate,
+      pool,
+      seed: Math.max(0, round1(Number(row.seed) || pool)),
+      createdAt: Number(row.createdAt) || Date.now(),
+      clientBuild: CLIENT_BUILD,
+    };
+  }
+
+  function publicLoan(row) {
+    if (!row?.id) return null;
+    return {
+      id: String(row.id),
+      lenderId: String(row.lenderId || ""),
+      lenderName: String(row.lenderName || ""),
+      borrowerId: String(row.borrowerId || ""),
+      borrowerName: String(row.borrowerName || ""),
+      principal: Math.max(0, round1(Number(row.principal) || 0)),
+      rate: Math.max(MIN_LEND_RATE, Math.min(MAX_LEND_RATE, Math.round(Number(row.rate) || MIN_LEND_RATE))),
+      paid: Math.max(0, round1(Number(row.paid) || 0)),
+      openedPeriod: String(row.openedPeriod || ""),
+      status: row.status === "closed" ? "closed" : "open",
+      updatedAt: Number(row.updatedAt) || Date.now(),
+      clientBuild: CLIENT_BUILD,
+    };
+  }
+
+  function mergeLoanList(localList, remoteList) {
+    const byId = new Map((localList || []).map((item) => [item.id, item]).filter((entry) => entry[0]));
+    (remoteList || []).forEach((row) => {
+      const next = publicLoan(row);
+      if (!next) return;
+      const local = byId.get(next.id);
+      if (local && worldSync.touched.has(`loan:${next.id}`)) return;
+      if (local) Object.assign(local, next);
+      else byId.set(next.id, next);
+    });
+    return [...byId.values()];
+  }
+
+  function mergeLenders(remote, preferLocal) {
+    const byId = new Map((state.lenders || []).map((item) => [item.id, item]));
+    (remote || []).forEach((row) => {
+      const next = publicLender(row);
+      if (!next) return;
+      const local = byId.get(next.id);
+      const keepPool = preferLocal && worldSync.touched.has(`lend:${next.id}`);
+      if (local) {
+        local.name = next.name || local.name;
+        local.ownerName = next.ownerName || local.ownerName;
+        local.rate = keepPool ? local.rate : next.rate;
+        if (!keepPool) local.pool = next.pool;
+        local.seed = keepPool ? local.seed : next.seed;
+      } else {
+        state.lenders.push(next);
+        byId.set(next.id, next);
+      }
+    });
+    const mine = (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    if (mine) {
+      state.lending = {
+        id: mine.id,
+        name: mine.name,
+        rate: mine.rate,
+        seed: mine.seed,
+      };
+    }
+  }
+
+  function mergeLoans(remote) {
+    state.loans = mergeLoanList(state.loans, remote);
   }
 
   function random() {
@@ -1258,6 +1506,9 @@
       playerId: session?.id || "guest",
       playerName: session?.nick || session?.id || "투자자",
       founded: null,
+      lending: null,
+      lenders: [],
+      loans: [],
       ads: [],
       players: [],
       adDone: false,
@@ -1543,6 +1794,12 @@
       }
       writeSession({ id, nick: row.nick || id });
     }
+    await fetchBans();
+    if (isBanned(id)) {
+      writeSession(null);
+      showAuthError("이 계좌는 강퇴되어 로그인할 수 없습니다.");
+      return;
+    }
     els.authPass.value = "";
     closeModal(els.authModal);
     toast("🪪", authMode === "register" ? "계좌 개설" : "로그인", authMode === "register"
@@ -1606,7 +1863,7 @@
   function playerTotal(player) {
     if (!player) return 0;
     if (player.id === state.playerId) return totalAssets();
-    return (player.cash || 0) + holdingsValueOf(player.holdings);
+    return round1((player.cash || 0) + holdingsValueOf(player.holdings) + lendingNetFor(player.id));
   }
 
   function syncLocalPlayer() {
@@ -1659,6 +1916,8 @@
         cash: state.cash,
         holdings: cloneHoldings(state.holdings),
         founded: state.founded,
+        lending: state.lending,
+        loans: (state.loans || []).filter((loan) => loan.borrowerId === session.id || loan.lenderId === `ln-${session.id}` || loan.lenderId === session.id),
         laborIncome: state.laborIncome,
         initialCash: state.initialCash,
         modeKey: state.modeKey,
@@ -1701,6 +1960,10 @@
       (state.assets || []).forEach((asset) => ensureHolding(state.holdings, asset.id));
     }
     if (row.founded) state.founded = row.founded;
+    if (row.lending) state.lending = row.lending;
+    if (Array.isArray(row.loans) && row.loans.length) {
+      state.loans = mergeLoanList(state.loans, row.loans);
+    }
     if (Number.isFinite(row.laborIncome)) state.laborIncome = row.laborIncome;
     if (Number.isFinite(row.initialCash)) state.initialCash = row.initialCash;
     if (Number.isFinite(row.research)) state.research = row.research;
@@ -1973,6 +2236,10 @@
 
   async function executeSharedTrade(assetId, side, qty) {
     qty = Math.floor(Number(qty) || 0);
+    if (isBanned(state?.playerId) || isBanned(session?.id)) {
+      ejectBanned();
+      return { ok: false, err: "locked" };
+    }
     const localAsset = assetById(assetId);
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
@@ -2085,6 +2352,272 @@
     return { ok: true, asset, cost, founderQty };
   }
 
+  function lenderById(id) {
+    return (state.lenders || []).find((item) => item.id === id);
+  }
+
+  function currentSettledPeriodId() {
+    if (worldSync.lastSettledPeriodId) return worldSync.lastSettledPeriodId;
+    try {
+      const parts = kstParts() || parseKstParts(kstNowMs());
+      return lastEndedPeriodId(parts);
+    } catch {
+      return "";
+    }
+  }
+
+  function schoolPeriodsBetween(fromId, toId) {
+    if (!fromId || !toId || toId <= fromId) return 0;
+    let n = 0;
+    let cursor = fromId;
+    for (let i = 0; i < 400; i += 1) {
+      cursor = nextPeriodAfter(cursor);
+      n += 1;
+      if (!cursor || cursor >= toId) break;
+    }
+    return n;
+  }
+
+  function loanPeriodsElapsed(loan) {
+    return schoolPeriodsBetween(loan?.openedPeriod, currentSettledPeriodId());
+  }
+
+  function loanRemaining(loan) {
+    if (!loan || loan.status === "closed") return 0;
+    const principal = Number(loan.principal) || 0;
+    const rate = Number(loan.rate) || 0;
+    const paid = Number(loan.paid) || 0;
+    const due = round1(principal + principal * (rate / 100) * loanPeriodsElapsed(loan));
+    return Math.max(0, round1(due - paid));
+  }
+
+  function openLoanFor(lenderId, borrowerId) {
+    return (state.loans || []).find((loan) => (
+      loan.lenderId === lenderId
+      && loan.borrowerId === borrowerId
+      && loan.status !== "closed"
+      && loanRemaining(loan) > 0
+    ));
+  }
+
+  function lendingNetFor(playerId) {
+    if (!playerId) return 0;
+    const lender = (state.lenders || []).find((item) => item.ownerId === playerId);
+    let net = lender ? (Number(lender.pool) || 0) : 0;
+    (state.loans || []).forEach((loan) => {
+      if (loan.status === "closed") return;
+      const rem = loanRemaining(loan);
+      if (lender && loan.lenderId === lender.id) net += rem;
+      if (loan.borrowerId === playerId) net -= rem;
+    });
+    return net;
+  }
+
+  function listLender(spec) {
+    const { ownerId, ownerName, name, rate, seed } = spec;
+    if ((ownerId === state.playerId && state.lending) || (state.lenders || []).some((item) => item.ownerId === ownerId || item.id === `ln-${ownerId}`)) {
+      return { ok: false, err: "once" };
+    }
+    const firmName = String(name || "").trim().slice(0, 12);
+    if (firmName.length < 2) return { ok: false, err: "name" };
+    const pct = Math.round(Number(rate) || 0);
+    if (pct < MIN_LEND_RATE || pct > MAX_LEND_RATE) return { ok: false, err: "rate" };
+    const actor = getActor(ownerId);
+    if (!actor) return { ok: false, err: "player" };
+    const availableCash = round1(Math.max(0, Number(actor.cash) || 0));
+    if (availableCash < MIN_LEND_SEED) return { ok: false, err: "cash" };
+    const requested = Math.round(Number(seed) || MIN_LEND_SEED);
+    const spend = Math.max(MIN_LEND_SEED, Math.min(availableCash, requested));
+    const id = `ln-${ownerId}`;
+    actor.cash = round1(actor.cash - spend);
+    const lender = {
+      id,
+      name: firmName,
+      ownerId,
+      ownerName: ownerName || ownerId,
+      rate: pct,
+      pool: spend,
+      seed: spend,
+      createdAt: Date.now(),
+      clientBuild: CLIENT_BUILD,
+    };
+    state.lenders = state.lenders || [];
+    state.lenders.push(lender);
+    if (ownerId === state.playerId) {
+      state.lending = { id, name: firmName, rate: pct, seed: spend };
+    }
+    syncLocalPlayer();
+    if (state.active) markTouched(`lend:${id}`);
+    return { ok: true, lender, cost: spend };
+  }
+
+  async function updateLenderDesk(spec) {
+    const lender = (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    if (!lender) return { ok: false, err: "missing" };
+    const firmName = String(spec.name || lender.name).trim().slice(0, 12);
+    if (firmName.length < 2) return { ok: false, err: "name" };
+    const pct = Math.round(Number(spec.rate) || lender.rate);
+    if (pct < MIN_LEND_RATE || pct > MAX_LEND_RATE) return { ok: false, err: "rate" };
+    const extra = Math.max(0, Math.round(Number(spec.seed) || 0));
+    if (extra > 0) {
+      if (state.cash + 1e-9 < extra) return { ok: false, err: "cash" };
+      const moved = await syncLenderPool(lender.id, extra);
+      if (!moved.ok) return moved;
+      applyLenderRow(moved.lender);
+      state.cash = round1(state.cash - extra);
+    }
+    const live = lenderById(lender.id) || lender;
+    live.name = firmName;
+    live.rate = pct;
+    live.ownerName = state.playerName;
+    if (extra > 0) live.seed = round1((Number(live.seed) || 0) + extra);
+    state.lending = { id: live.id, name: firmName, rate: pct, seed: live.seed };
+    syncLocalPlayer();
+    markTouched(`lend:${live.id}`);
+    return { ok: true, lender: live, extra };
+  }
+
+  async function adjustLenderPoolWithRest(lenderId, delta) {
+    const path = `${FIREBASE_WORLD_PATH}/lenders/${safeFbKey(lenderId)}`;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+      if (!read.ok) throw new Error(`firebase-rest-read-${read.status}`);
+      const etag = read.headers.get("ETag");
+      const remote = await read.json();
+      const lender = publicLender(remote || lenderById(lenderId));
+      if (!lender?.id) return { ok: false, err: "missing" };
+      const nextPool = round1((Number(lender.pool) || 0) + delta);
+      if (delta < 0 && nextPool < -1e-9) return { ok: false, err: "pool" };
+      lender.pool = Math.max(0, nextPool);
+      lender.clientBuild = CLIENT_BUILD;
+      const headers = { "Content-Type": "application/json" };
+      if (etag) headers["If-Match"] = etag;
+      const write = await firebaseRestRequest(path, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(lender),
+      });
+      if (write.status === 412) continue;
+      if (!write.ok) throw new Error(`firebase-rest-write-${write.status}`);
+      const saved = await write.json();
+      return { ok: true, lender: publicLender(saved || lender) };
+    }
+    throw new Error("firebase-rest-conflict");
+  }
+
+  async function syncLenderPool(lenderId, delta) {
+    if (firebaseConfig()) {
+      try {
+        return await adjustLenderPoolWithRest(lenderId, delta);
+      } catch {
+        return { ok: false, err: "network" };
+      }
+    }
+    const lender = lenderById(lenderId);
+    if (!lender) return { ok: false, err: "missing" };
+    const nextPool = round1((Number(lender.pool) || 0) + delta);
+    if (delta < 0 && nextPool < -1e-9) return { ok: false, err: "pool" };
+    lender.pool = Math.max(0, nextPool);
+    return { ok: true, lender };
+  }
+
+  function applyLenderRow(row) {
+    const next = publicLender(row);
+    if (!next) return null;
+    const local = lenderById(next.id);
+    if (local) Object.assign(local, next);
+    else {
+      state.lenders = state.lenders || [];
+      state.lenders.push(next);
+    }
+    return lenderById(next.id);
+  }
+
+  function upsertLoan(row) {
+    const next = publicLoan(row);
+    if (!next) return null;
+    state.loans = state.loans || [];
+    const local = state.loans.find((item) => item.id === next.id);
+    if (local) Object.assign(local, next);
+    else state.loans.push(next);
+    return next;
+  }
+
+  async function borrowFromLender(lenderId, amount) {
+    amount = Math.round(Number(amount) || 0);
+    if (!state?.active) return { ok: false, err: "locked" };
+    const lender = lenderById(lenderId);
+    if (!lender) return { ok: false, err: "missing" };
+    if (lender.ownerId === state.playerId) return { ok: false, err: "self" };
+    if (amount < MIN_BORROW) return { ok: false, err: "min" };
+    if (amount > MAX_BORROW) return { ok: false, err: "max" };
+    if (openLoanFor(lenderId, state.playerId)) return { ok: false, err: "open" };
+    const pooled = round1(Number(lender.pool) || 0);
+    if (pooled + 1e-9 < amount) return { ok: false, err: "pool" };
+    const result = await syncLenderPool(lenderId, -amount);
+    if (!result.ok) return result;
+    applyLenderRow(result.lender);
+    const loan = upsertLoan({
+      id: `loan-${lender.ownerId}-${state.playerId}`,
+      lenderId: lender.id,
+      lenderName: lender.name,
+      borrowerId: state.playerId,
+      borrowerName: state.playerName,
+      principal: amount,
+      rate: lender.rate,
+      paid: 0,
+      openedPeriod: currentSettledPeriodId(),
+      status: "open",
+      updatedAt: Date.now(),
+    });
+    state.cash = round1(state.cash + amount);
+    syncLocalPlayer();
+    markTouched(`lend:${lender.id}`);
+    markTouched(`loan:${loan.id}`);
+    return { ok: true, loan, amount, lender: lenderById(lender.id) };
+  }
+
+  async function repayLoan(lenderId, amount) {
+    amount = round1(Math.max(0, Number(amount) || 0));
+    if (!state?.active) return { ok: false, err: "locked" };
+    const loan = openLoanFor(lenderId, state.playerId);
+    if (!loan) return { ok: false, err: "missing" };
+    const remaining = loanRemaining(loan);
+    if (!(remaining > 0)) return { ok: false, err: "missing" };
+    const pay = round1(Math.min(amount, remaining, state.cash));
+    if (!(pay > 0)) return { ok: false, err: "cash" };
+    const result = await syncLenderPool(lenderId, pay);
+    if (!result.ok) return result;
+    applyLenderRow(result.lender);
+    state.cash = round1(state.cash - pay);
+    loan.paid = round1((Number(loan.paid) || 0) + pay);
+    if (loanRemaining(loan) <= 0) loan.status = "closed";
+    loan.updatedAt = Date.now();
+    upsertLoan(loan);
+    syncLocalPlayer();
+    markTouched(`lend:${lenderId}`);
+    markTouched(`loan:${loan.id}`);
+    return { ok: true, loan, amount: pay, remaining: loanRemaining(loan) };
+  }
+
+  async function moveOwnPool(delta) {
+    const lender = (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    if (!lender) return { ok: false, err: "missing" };
+    delta = round1(Number(delta) || 0);
+    if (!delta) return { ok: false, err: "min" };
+    if (delta > 0 && state.cash + 1e-9 < delta) return { ok: false, err: "cash" };
+    if (delta < 0 && (Number(lender.pool) || 0) + delta < -1e-9) return { ok: false, err: "pool" };
+    const result = await syncLenderPool(lender.id, delta);
+    if (!result.ok) return result;
+    applyLenderRow(result.lender);
+    state.cash = round1(state.cash - delta);
+    if (delta > 0) lender.seed = round1((Number(lender.seed) || 0) + delta);
+    state.lending = { id: lender.id, name: lender.name, rate: lender.rate, seed: lender.seed };
+    syncLocalPlayer();
+    markTouched(`lend:${lender.id}`);
+    return { ok: true, lender, delta };
+  }
+
   function rollCompanyOps(asset) {
     const shock = (random() * 2 - 1) * 0.085 + 0.006;
     const up = ["주간 매출이 예상보다 단단했습니다.", "신규 주문이 늘었습니다.", "고정비를 잘 막았습니다."];
@@ -2186,6 +2719,7 @@
 
   function stopWorldSync() {
     unsubscribeWorld();
+    unsubscribeBans();
     stopPresence();
     if (worldSync.pollTimer) clearInterval(worldSync.pollTimer);
     if (worldSync.clockTimer) clearInterval(worldSync.clockTimer);
@@ -2551,6 +3085,8 @@
           ts: msg.ts,
         })),
       })),
+      lenders: (state.lenders || []).map(publicLender).filter(Boolean),
+      loans: (state.loans || []).map(publicLoan).filter(Boolean),
     };
   }
 
@@ -2676,6 +3212,8 @@
     }
 
     mergePlayers(remote.players);
+    mergeLenders(remote.lenders, preferLocal);
+    mergeLoans(remote.loans, preferLocal);
     purgeBots();
     ensureCoreListings();
 
@@ -2683,6 +3221,10 @@
     if (state.assets.some((asset) => asset.founderId === state.playerId)) {
       const mine = state.assets.find((asset) => asset.founderId === state.playerId);
       state.founded = state.founded || { assetId: mine.id, name: mine.name, symbol: mine.symbol, sectorKey: mine.sectorKey, seed: 0 };
+    }
+    const mineLender = (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    if (mineLender) {
+      state.lending = state.lending || { id: mineLender.id, name: mineLender.name, rate: mineLender.rate, seed: mineLender.seed };
     }
     const settled = !preferLocal && prevSettled && worldSync.lastSettledPeriodId && worldSync.lastSettledPeriodId !== prevSettled;
     return { settled, weekChanged };
@@ -2941,6 +3483,10 @@
 
   async function pushWorld() {
     if (worldSync.putting || worldSync.applyingRemote || !state?.active) return false;
+    if (isBanned(state.playerId) || isBanned(session?.id)) {
+      ejectBanned();
+      return false;
+    }
     if (!firebaseReady()) {
       noteWorldError();
       return false;
@@ -2982,7 +3528,7 @@
   }
 
   async function pullWorld() {
-    if (!state?.active || worldSync.putting || worldSync.applyingRemote) return;
+    if (!state?.active || worldSync.putting || worldSync.applyingRemote || isDeskEditing()) return;
     try {
       const remote = await fetchWorld();
       if (!remote) return;
@@ -3172,6 +3718,7 @@
   async function tickClock() {
     if (kstClock.ok) kstClock.parts = parseKstParts(kstNowMs());
     renderClock();
+    if (isDeskEditing()) return;
     await maybeSettleFromClock();
     if (state?.active) renderRoom();
   }
@@ -3179,6 +3726,7 @@
   function startWorldLoop() {
     stopWorldSync();
     subscribeWorld();
+    subscribeBans();
     startPresence();
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
@@ -3195,12 +3743,25 @@
   }
 
   function watchClientBuild() {
-    fetch(`build.json?t=${Date.now()}`, { cache: "no-store" }).then((res) => res.json()).then((row) => {
-      if (row?.build && String(row.build) !== CLIENT_BUILD) location.reload();
+    if (isDeskEditing() || state?.active || worldSync.inMarket) return;
+    fetch(`build.json?t=${Date.now()}`, { cache: "no-store" }).then((res) => {
+      if (!res.ok) return null;
+      return res.json();
+    }).then((row) => {
+      if (!row?.build || String(row.build) === CLIENT_BUILD) return;
+      const key = `bull-lab-reload-${row.build}`;
+      try {
+        if (sessionStorage.getItem(key)) return;
+        sessionStorage.setItem(key, "1");
+      } catch {
+        /* ignore */
+      }
+      location.reload();
     }).catch(() => {});
   }
 
   function onWorldFocus() {
+    if (isDeskEditing()) return;
     refreshKst().then(() => tickClock());
     pullWorld();
   }
@@ -3211,6 +3772,12 @@
     try {
       if (!requireSession()) {
         if (els.lobbyStatus) els.lobbyStatus.textContent = "먼저 로그인한 뒤 시장에 입장하세요.";
+        return;
+      }
+      await fetchBans();
+      if (isBanned(session.id)) {
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "이 계좌는 강퇴되어 시장에 들어갈 수 없습니다.";
+        toast("🚫", "입장 거부", "강퇴된 아이디입니다. 다른 계좌를 만드세요.");
         return;
       }
       if (worldSync.inMarket && state?.active) {
@@ -3490,6 +4057,200 @@
     openModal(els.adModal);
   }
 
+  function showLendError(message) {
+    if (!els.lendError) return;
+    els.lendError.hidden = false;
+    els.lendError.textContent = message;
+  }
+
+  function showBorrowError(message) {
+    if (!els.borrowError) return;
+    els.borrowError.hidden = false;
+    els.borrowError.textContent = message;
+  }
+
+  function openLendModal() {
+    if (!state?.active) {
+      toast("📈", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
+    const existing = (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    els.lendError.hidden = true;
+    if (els.lendTitle) els.lendTitle.textContent = existing ? "대출회사 운영" : "대출회사 설립";
+    if (els.lendName) els.lendName.value = existing?.name || "";
+    if (els.lendRate) els.lendRate.value = String(existing?.rate || 5);
+    const seedLabel = els.lendSeed?.closest("label");
+    if (seedLabel && seedLabel.firstChild) {
+      seedLabel.firstChild.textContent = existing ? "추가 출자금 (만원)" : "출자금 (만원)";
+    }
+    if (els.lendSeed) {
+      els.lendSeed.min = existing ? "0" : String(MIN_LEND_SEED);
+      const available = Math.floor(round1(Math.max(0, state.cash)) / 10) * 10;
+      if (existing) {
+        els.lendSeed.value = "0";
+        els.lendSeed.max = String(Math.max(0, available));
+      } else {
+        const suggested = Math.floor(Math.min(120, Math.max(MIN_LEND_SEED, state.cash * 0.12)) / 10) * 10;
+        els.lendSeed.max = String(Math.max(MIN_LEND_SEED, available));
+        els.lendSeed.value = String(Math.min(Math.max(MIN_LEND_SEED, available), suggested));
+      }
+    }
+    const submit = els.lendForm?.querySelector("button[type='submit']");
+    if (submit) submit.innerHTML = existing ? `저장하기 <span>→</span>` : `대출회사 열기 <span>→</span>`;
+    openModal(els.lendModal);
+  }
+
+  function openBorrowDesk(action, lenderId) {
+    if (!state?.active) {
+      toast("📈", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
+    pendingLendAction = action;
+    pendingBorrowLenderId = lenderId || "";
+    els.borrowError.hidden = true;
+    const lender = lenderById(lenderId) || (state.lenders || []).find((item) => item.ownerId === state.playerId);
+    const titles = {
+      borrow: "대출 받기",
+      repay: "대출 갚기",
+      fund: "출자금 넣기",
+      withdraw: "출자금 출금",
+    };
+    if (els.borrowTitle) els.borrowTitle.textContent = titles[action] || "대출";
+    if (action === "borrow") {
+      const max = Math.min(MAX_BORROW, Math.floor((Number(lender?.pool) || 0) / 10) * 10);
+      els.borrowLead.textContent = `${lender?.name || "대출회사"} · 교시당 ${lender?.rate || 0}% · 재원 ${money(lender?.pool || 0)}. 주식처럼 사고파는 회사가 아닙니다.`;
+      els.borrowAmount.min = String(MIN_BORROW);
+      els.borrowAmount.max = String(Math.max(MIN_BORROW, max));
+      els.borrowAmount.value = String(Math.min(40, Math.max(MIN_BORROW, max)));
+    } else if (action === "repay") {
+      const loan = openLoanFor(lenderId, state.playerId);
+      const remaining = loanRemaining(loan);
+      els.borrowLead.textContent = `${lender?.name || "대출회사"}에 ${money(remaining)}이 남아 있습니다. 갚은 돈은 회사 재원으로 들어갑니다.`;
+      els.borrowAmount.min = "1";
+      els.borrowAmount.max = String(Math.max(1, Math.floor(Math.min(state.cash, remaining))));
+      els.borrowAmount.value = String(Math.max(1, Math.floor(Math.min(state.cash, remaining))));
+    } else if (action === "fund") {
+      els.borrowLead.textContent = "현금에서 대출 재원으로 옮깁니다. 상장 주식과는 별개입니다.";
+      els.borrowAmount.min = "10";
+      els.borrowAmount.max = String(Math.max(10, Math.floor(state.cash / 10) * 10));
+      els.borrowAmount.value = String(Math.min(20, Math.max(10, Math.floor(state.cash / 10) * 10)));
+    } else {
+      const pool = Number(lender?.pool) || 0;
+      els.borrowLead.textContent = `재원 ${money(pool)}을 내 현금으로 옮깁니다.`;
+      els.borrowAmount.min = "1";
+      els.borrowAmount.max = String(Math.max(1, Math.floor(pool)));
+      els.borrowAmount.value = String(Math.min(20, Math.max(1, Math.floor(pool))));
+    }
+    const submit = els.borrowForm?.querySelector("button[type='submit']");
+    if (submit) {
+      submit.innerHTML = action === "borrow" ? `빌리기 <span>→</span>`
+        : action === "repay" ? `갚기 <span>→</span>`
+          : action === "fund" ? `출자하기 <span>→</span>`
+            : `출금하기 <span>→</span>`;
+    }
+    openModal(els.borrowModal);
+  }
+
+  async function submitLend(event) {
+    event.preventDefault();
+    const spec = {
+      ownerId: state.playerId,
+      ownerName: state.playerName,
+      name: els.lendName.value,
+      rate: Number(els.lendRate.value),
+      seed: Number(els.lendSeed.value),
+    };
+    const result = state.lending ? await updateLenderDesk(spec) : listLender(spec);
+    if (!result.ok) {
+      const map = {
+        once: "대출회사는 계정당 한 곳입니다.",
+        name: "상호를 2자 이상 입력하세요.",
+        rate: `이자는 교시당 ${MIN_LEND_RATE}–${MAX_LEND_RATE}%입니다.`,
+        cash: "출자할 현금이 부족합니다.",
+        missing: "대출회사가 없습니다.",
+        pool: "대출 재원이 부족합니다.",
+        network: "공유 시장에 닿지 못했습니다. 잠시 후 다시 눌러 주세요.",
+      };
+      showLendError(map[result.err] || "저장에 실패했습니다.");
+      return;
+    }
+    closeModal(els.lendModal);
+    if (result.cost) toast("🏦", "대출회사", `${result.lender.name} · 재원 ${money(result.cost)} · 교시당 ${result.lender.rate}%`);
+    else toast("🏦", "대출 운영", `${result.lender.name} · 교시당 ${result.lender.rate}%${result.extra ? ` · 추가 ${money(result.extra)}` : ""}`);
+    renderAll();
+  }
+
+  async function submitBorrow(event) {
+    event.preventDefault();
+    const amount = Number(els.borrowAmount.value);
+    const action = pendingLendAction;
+    const lenderId = pendingBorrowLenderId;
+    let result;
+    if (action === "borrow") result = await borrowFromLender(lenderId, amount);
+    else if (action === "repay") result = await repayLoan(lenderId, amount);
+    else if (action === "fund") result = await moveOwnPool(amount);
+    else if (action === "withdraw") result = await moveOwnPool(-amount);
+    else result = { ok: false, err: "locked" };
+    if (!result.ok) {
+      const map = {
+        locked: "시장에 들어간 뒤 이용하세요.",
+        missing: "대상 대출을 찾지 못했습니다.",
+        self: "자기 회사에서는 빌릴 수 없습니다.",
+        min: "금액이 너무 작습니다.",
+        max: `한 번에 ${money(MAX_BORROW)}까지입니다.`,
+        open: "이 회사에서 이미 갚지 않은 대출이 있습니다.",
+        pool: "대출 재원이 부족합니다.",
+        cash: "현금이 부족합니다.",
+        network: "공유 시장에 닿지 못했습니다. 잠시 후 다시 눌러 주세요.",
+      };
+      showBorrowError(map[result.err] || "처리하지 못했습니다.");
+      return;
+    }
+    closeModal(els.borrowModal);
+    if (action === "borrow") toast("💸", "대출 실행", `${result.lender?.name || "대출회사"}에서 ${money(result.amount)}을 빌렸습니다.`);
+    else if (action === "repay") toast("🧾", "상환", `${money(result.amount)}을 갚았습니다.${result.remaining > 0 ? ` 남은 빚 ${money(result.remaining)}` : " 완납"}`);
+    else if (action === "fund") toast("🏦", "추가 출자", `재원에 ${money(result.delta)}을 넣었습니다.`);
+    else toast("🏦", "출금", `재원에서 ${money(-result.delta)}을 현금으로 옮겼습니다.`);
+    renderAll();
+  }
+
+  function renderLenders() {
+    if (!els.lendList) return;
+    const lenders = (state.lenders || []).slice().sort((a, b) => (b.pool || 0) - (a.pool || 0));
+    const myDebt = (state.loans || []).reduce((sum, loan) => (
+      loan.borrowerId === state.playerId ? sum + loanRemaining(loan) : sum
+    ), 0);
+    if (els.lendDebt) {
+      els.lendDebt.hidden = !(myDebt > 0);
+      els.lendDebt.textContent = myDebt > 0 ? `내가 갚을 돈 ${money(myDebt)} · 이자는 교시가 끝날 때마다 붙습니다.` : "";
+    }
+    if (!lenders.length) {
+      els.lendList.innerHTML = `<li class="lend-empty">아직 대출회사가 없습니다. 주식 회사와 별도로, 돈을 빌려주는 창구만 열 수 있습니다.</li>`;
+      return;
+    }
+    els.lendList.innerHTML = lenders.map((lender) => {
+      const mine = lender.ownerId === state.playerId;
+      const loan = openLoanFor(lender.id, state.playerId);
+      const remaining = loanRemaining(loan);
+      const issued = (state.loans || []).reduce((sum, row) => (
+        row.lenderId === lender.id && row.status !== "closed" ? sum + loanRemaining(row) : sum
+      ), 0);
+      const actions = mine
+        ? `<button type="button" data-lend-action="fund" data-id="${esc(lender.id)}">출자</button>
+           <button type="button" data-lend-action="withdraw" data-id="${esc(lender.id)}">출금</button>`
+        : remaining > 0
+          ? `<button type="button" data-lend-action="repay" data-id="${esc(lender.id)}">갚기</button>`
+          : `<button type="button" data-lend-action="borrow" data-id="${esc(lender.id)}" ${Number(lender.pool) < MIN_BORROW ? "disabled" : ""}>빌리기</button>`;
+      return `
+        <li class="${mine ? "is-mine" : ""}">
+          <span class="lend-sym">${mine ? "내 회사" : "대출"} · 교시당 ${esc(lender.rate)}%</span>
+          <b>${esc(lender.name)}</b>
+          <small>${esc(lender.ownerName || "사장")} · 재원 ${money(lender.pool)}${issued > 0 ? ` · 빌려준 잔액 ${money(issued)}` : ""}${remaining > 0 ? ` · 내 빚 ${money(remaining)}` : ""}</small>
+          <div class="lend-actions">${actions}</div>
+        </li>`;
+    }).join("");
+  }
+
   function submitFound(event) {
     event.preventDefault();
     const spec = {
@@ -3548,34 +4309,42 @@
   }
 
   function renderRanking() {
-    const ranked = humansRanked();
-    const meIndex = ranked.findIndex((player) => player.id === state.playerId);
-    let top = ranked.slice(0, 5);
-    if (meIndex >= 5) top = [...ranked.slice(0, 4), ranked[meIndex]];
-    const place = (player) => ranked.findIndex((item) => item.id === player.id) + 1;
-    const rows = top.map((player) => {
-      const me = player.id === state.playerId;
+    const ranked = humansRanked({ includeHidden: isMod });
+    const visible = humansRanked();
+    const board = isMod ? ranked : visible;
+    const meIndex = visible.findIndex((player) => player.id === state?.playerId);
+    let top = visible.slice(0, 5);
+    if (meIndex >= 5) top = [...visible.slice(0, 4), visible[meIndex]];
+    const place = (player) => board.findIndex((item) => item.id === player.id) + 1;
+    const rows = board.slice(0, isMod ? 12 : 5).map((player) => {
+      const me = player.id === state?.playerId;
       const firm = player.founded?.symbol || "";
+      const hidden = isHiddenWealth(player);
+      const kick = isMod && !me
+        ? `<button type="button" class="kick-button" data-kick="${esc(player.id)}">강퇴</button>`
+        : "";
       return `
-        <li class="${me ? "is-me" : ""}">
-          <span class="rank-n">${place(player)}</span>
-          <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b>
+        <li class="${me ? "is-me" : ""} ${hidden ? "is-flagged" : ""}">
+          <span class="rank-n">${place(player) > 0 ? place(player) : "–"}</span>
+          <b>${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}${hidden ? `<span class="me-tag">이상</span>` : ""}</b>
           <small>${firm ? `${esc(firm)} · ` : ""}${money(player.total || 0)}</small>
+          ${kick}
         </li>`;
     }).join("");
     if (els.rankStrip) {
       els.rankStrip.innerHTML = top.map((player) => {
-        const me = player.id === state.playerId;
+        const me = player.id === state?.playerId;
         return `<li class="${me ? "is-me" : ""}"><b>${place(player)} ${esc(player.name || player.id)}${me ? `<span class="me-tag">나</span>` : ""}</b><small>${money(player.total || 0)}</small></li>`;
       }).join("");
     }
     if (els.rankList) {
-      els.rankList.innerHTML = top.length ? rows : `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
+      els.rankList.innerHTML = rows || `<li class="empty-log">시장에 입장하면 순위가 집계됩니다.</li>`;
     }
   }
 
   async function loadPublicRanking() {
     try {
+      await fetchBans();
       const remote = await fetchWorld();
       if (!remote?.players) return;
       mergePlayers(remote.players);
@@ -3600,13 +4369,22 @@
       els.foundButton.classList.toggle("is-off", off);
       els.foundButton.setAttribute("aria-disabled", off ? "true" : "false");
     }
+    if (els.lendButton) {
+      els.lendButton.disabled = false;
+      els.lendButton.classList.toggle("is-off", closed);
+      els.lendButton.setAttribute("aria-disabled", closed ? "true" : "false");
+      els.lendButton.textContent = state.lending ? "대출 운영" : "대출회사";
+    }
     if (els.adButton) {
       const off = closed || !state.founded || state.adDone;
       els.adButton.disabled = false;
       els.adButton.classList.toggle("is-off", off);
       els.adButton.setAttribute("aria-disabled", off ? "true" : "false");
     }
-    renderChat();
+    if (!isDeskEditing()) {
+      renderRanking();
+      renderChat();
+    }
   }
 
   function renderAds() {
@@ -3734,14 +4512,18 @@
   }
 
   function totalAssets() {
-    return state.cash + state.assets.reduce((sum, asset) => {
+    const stocks = state.assets.reduce((sum, asset) => {
       const holding = ensureHolding(state.holdings, asset.id);
       return sum + asset.price * holding.qty;
     }, 0);
+    return round1(state.cash + stocks + lendingNetFor(state.playerId));
   }
 
   function holdingsValue() {
-    return totalAssets() - state.cash;
+    return state.assets.reduce((sum, asset) => {
+      const holding = ensureHolding(state.holdings, asset.id);
+      return sum + asset.price * holding.qty;
+    }, 0);
   }
 
   function returnRate() {
@@ -3786,7 +4568,16 @@
   }
 
   function renderAll() {
+    if (!state) return;
     renderSummary();
+    if (els.closeMarket) els.closeMarket.disabled = !state.active;
+    if (isDeskEditing()) {
+      patchAssetRows();
+      updateLiveCharts();
+      renderClock();
+      renderSyncStatus();
+      return;
+    }
     renderNews();
     renderAssets();
     renderLiveBoard();
@@ -3798,8 +4589,8 @@
     renderActivities();
     renderRoom();
     renderAds();
+    renderLenders();
     renderChat();
-    if (els.closeMarket) els.closeMarket.disabled = !state.active;
   }
 
   function renderSummary() {
@@ -3859,6 +4650,181 @@
     const values = ensureTicks(asset);
     const tone = tickToneClass(values);
     return `<svg class="asset-spark ${tone}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${sparkPath(values, w, h)}"></path></svg>`;
+  }
+
+  function isDeskEditing() {
+    const el = document.activeElement;
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
+      return !!(el.closest && el.closest(".quantity"));
+    }
+    if (els.assetList?.contains(el)) return true;
+    if (el.closest?.(".quantity, .trade-box, .found-form, .chat-form, .modal")) return true;
+    return el.id === "chat-input" || el.id === "chat-room-name" || el.id === "borrow-amount";
+  }
+
+  function qtyFieldFocused() {
+    return isDeskEditing();
+  }
+
+  function readQtyMap() {
+    const map = {};
+    els.assetList?.querySelectorAll(".asset-row").forEach((row) => {
+      const input = row.querySelector(".quantity input");
+      if (row.dataset.id && input) map[row.dataset.id] = input.value;
+    });
+    return map;
+  }
+
+  function assetRowMarkup(asset, qtyValue) {
+    const holding = ensureHolding(state.holdings, asset.id);
+    const forecast = forecastFor(asset);
+    const maxBuy = Math.floor(state.cash / asset.price);
+    const disabled = !state.active;
+    const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
+    const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
+    const flow = flowHint(asset);
+    const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
+    const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
+    const adImage = safeImageUrl(asset.ad?.image);
+    const adImg = asset.ad && asset.ad.week === state.week && adImage ? `<img class="ad-thumb" alt="" src="${esc(adImage)}">` : "";
+    const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${esc(asset.opsNote)}</span>` : "";
+    const qty = qtyValue == null || qtyValue === "" ? "1" : String(qtyValue);
+    return `
+      <article class="asset-row ${asset.playerCompany ? "is-player" : "is-core"}" data-id="${esc(asset.id)}" style="--asset-color:${safeColor(asset.color)}">
+        <div class="asset-name">
+          <span class="asset-symbol">${esc(asset.symbol)}</span>
+          <strong>${esc(asset.name)}</strong>
+          <small>${esc(asset.sector)}</small>
+          ${founder}${adMark}${ops}${adImg}
+          <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
+        </div>
+        <div class="asset-price">
+          <strong class="asset-last">${money(asset.price)}</strong>
+          ${sparkSvg(asset, SPARK_W, SPARK_H)}
+          <span class="asset-change ${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개</span>
+          <span class="flow-pill ${flow.type}">${flow.text}</span>
+        </div>
+        <div class="asset-forecast">
+          <span class="forecast-pill ${forecast.type}">${forecast.text}</span>
+          <button class="research-button" data-action="research" type="button" ${disabled || state.research <= 0 || state.analyzed.has(asset.id) ? "disabled" : ""}>
+            ${state.analyzed.has(asset.id) ? "분석 완료" : "1P 정밀 분석"}
+          </button>
+        </div>
+        <div class="trade-box">
+          <div class="position-info">
+            <span>보유 <b class="pos-qty">${holding.qty}주</b></span>
+            <span class="pos-meta">${holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b>` : `최대 ${maxBuy}주`}</span>
+          </div>
+          <div class="quantity">
+            <button data-action="minus" type="button" ${disabled ? "disabled" : ""}>−</button>
+            <input type="number" min="1" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" value="${esc(qty)}" aria-label="${esc(asset.name)} 거래 수량" ${disabled ? "disabled" : ""}>
+            <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
+          </div>
+          <div class="trade-actions">
+            <button data-action="buy" type="button" ${disabled ? "disabled" : ""} ${maxBuy < 1 ? `title="현금이 부족합니다"` : ""}>매수</button>
+            <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function patchAssetRow(row, asset) {
+    if (!row || !asset) return;
+    const holding = ensureHolding(state.holdings, asset.id);
+    const forecast = forecastFor(asset);
+    const maxBuy = Math.floor(state.cash / asset.price);
+    const disabled = !state.active;
+    const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
+    const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
+    const flow = flowHint(asset);
+    const last = row.querySelector(".asset-last");
+    if (last) last.textContent = money(asset.price);
+    const change = row.querySelector(".asset-change");
+    if (change) {
+      change.className = `asset-change ${changeType}`;
+      change.textContent = `${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개`;
+    }
+    const flowEl = row.querySelector(".flow-pill");
+    if (flowEl) {
+      flowEl.className = `flow-pill ${flow.type}`;
+      flowEl.textContent = flow.text;
+    }
+    const forecastEl = row.querySelector(".forecast-pill");
+    if (forecastEl) {
+      forecastEl.className = `forecast-pill ${forecast.type}`;
+      forecastEl.textContent = forecast.text;
+    }
+    const research = row.querySelector("[data-action='research']");
+    if (research) {
+      const done = state.analyzed.has(asset.id);
+      research.disabled = disabled || state.research <= 0 || done;
+      research.textContent = done ? "분석 완료" : "1P 정밀 분석";
+    }
+    const qtyEl = row.querySelector(".pos-qty");
+    if (qtyEl) qtyEl.textContent = `${holding.qty}주`;
+    const meta = row.querySelector(".pos-meta");
+    if (meta) meta.innerHTML = holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b>` : `최대 ${maxBuy}주`;
+    row.querySelectorAll("[data-action='minus'], [data-action='plus']").forEach((button) => {
+      button.disabled = disabled;
+    });
+    const input = row.querySelector(".quantity input");
+    if (input) input.disabled = disabled;
+    const buyBtn = row.querySelector("[data-action='buy']");
+    if (buyBtn && buyBtn.getAttribute("aria-busy") !== "true") {
+      buyBtn.disabled = disabled;
+      buyBtn.textContent = "매수";
+      if (maxBuy < 1) buyBtn.setAttribute("title", "현금이 부족합니다");
+      else buyBtn.removeAttribute("title");
+    }
+    const sellBtn = row.querySelector("[data-action='sell']");
+    if (sellBtn && sellBtn.getAttribute("aria-busy") !== "true") {
+      sellBtn.disabled = disabled || holding.qty < 1;
+      sellBtn.textContent = "매도";
+    }
+  }
+
+  function patchAssetRows() {
+    if (!els.assetList || !state?.assets) return false;
+    const rows = [...els.assetList.querySelectorAll(".asset-row")];
+    if (!rows.length) return false;
+    const ids = state.assets.map((asset) => asset.id);
+    const sameOrder = rows.length === ids.length && rows.every((row, index) => row.dataset.id === ids[index]);
+    if (!sameOrder) return false;
+    rows.forEach((row) => {
+      const asset = assetById(row.dataset.id);
+      if (asset) patchAssetRow(row, asset);
+    });
+    updateLiveCharts();
+    return true;
+  }
+
+  function renderAssets() {
+    ensureCoreListings();
+    if (!els.assetList) return;
+    if (patchAssetRows()) {
+      if (!qtyFieldFocused()) renderLiveBoard();
+      return;
+    }
+    if (qtyFieldFocused()) {
+      const have = new Set([...els.assetList.querySelectorAll(".asset-row")].map((row) => row.dataset.id));
+      state.assets.forEach((asset) => {
+        if (have.has(asset.id)) {
+          const row = [...els.assetList.querySelectorAll(".asset-row")].find((item) => item.dataset.id === asset.id);
+          if (row) patchAssetRow(row, asset);
+          return;
+        }
+        els.assetList.insertAdjacentHTML("beforeend", assetRowMarkup(asset, "1"));
+      });
+      updateLiveCharts();
+      return;
+    }
+    const qtyMap = readQtyMap();
+    els.assetList.innerHTML = state.assets.map((asset) => assetRowMarkup(asset, qtyMap[asset.id])).join("");
+    renderLiveBoard();
+    updateLiveCharts();
   }
 
   function selectChart(id) {
@@ -3937,65 +4903,6 @@
       els.liveChartPrice.textContent = money(asset.price);
       els.liveChartPrice.className = tickToneClass(values);
     }
-  }
-
-  function renderAssets() {
-    ensureCoreListings();
-    els.assetList.innerHTML = state.assets.map((asset) => {
-      const holding = ensureHolding(state.holdings, asset.id);
-      const forecast = forecastFor(asset);
-      const maxBuy = Math.floor(state.cash / asset.price);
-      const disabled = !state.active;
-      const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-      const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
-      const flow = flowHint(asset);
-      const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
-      const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
-      const adImage = safeImageUrl(asset.ad?.image);
-      const adImg = asset.ad && asset.ad.week === state.week && adImage ? `<img class="ad-thumb" alt="" src="${esc(adImage)}">` : "";
-      const ops = asset.playerCompany && asset.opsNote ? `<span class="ops-note">${esc(asset.opsNote)}</span>` : "";
-
-      return `
-        <article class="asset-row ${asset.playerCompany ? "is-player" : "is-core"}" data-id="${esc(asset.id)}" style="--asset-color:${safeColor(asset.color)}">
-          <div class="asset-name">
-            <span class="asset-symbol">${esc(asset.symbol)}</span>
-            <strong>${esc(asset.name)}</strong>
-            <small>${esc(asset.sector)}</small>
-            ${founder}${adMark}${ops}${adImg}
-            <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
-          </div>
-          <div class="asset-price">
-            <strong class="asset-last">${money(asset.price)}</strong>
-            ${sparkSvg(asset, SPARK_W, SPARK_H)}
-            <span class="${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개</span>
-            <span class="flow-pill ${flow.type}">${flow.text}</span>
-          </div>
-          <div class="asset-forecast">
-            <span class="forecast-pill ${forecast.type}">${forecast.text}</span>
-            <button class="research-button" data-action="research" type="button" ${disabled || state.research <= 0 || state.analyzed.has(asset.id) ? "disabled" : ""}>
-              ${state.analyzed.has(asset.id) ? "분석 완료" : "1P 정밀 분석"}
-            </button>
-          </div>
-          <div class="trade-box">
-            <div class="position-info">
-              <span>보유 <b>${holding.qty}주</b></span>
-              <span>${holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b>` : `최대 ${maxBuy}주`}</span>
-            </div>
-            <div class="quantity">
-              <button data-action="minus" type="button" ${disabled ? "disabled" : ""}>−</button>
-              <input type="number" min="1" value="1" aria-label="${esc(asset.name)} 거래 수량" ${disabled ? "disabled" : ""}>
-              <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
-            </div>
-            <div class="trade-actions">
-              <button data-action="buy" type="button" ${disabled ? "disabled" : ""} ${maxBuy < 1 ? `title="현금이 부족합니다"` : ""}>매수</button>
-              <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
-            </div>
-          </div>
-        </article>
-      `;
-    }).join("");
-    renderLiveBoard();
-    updateLiveCharts();
   }
 
   function renderPortfolio() {
@@ -4936,7 +5843,7 @@
   }
 
   function allModals() {
-    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.adModal].filter(Boolean);
+    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.lendModal, els.borrowModal, els.adModal].filter(Boolean);
   }
 
   function closeModal(modal) {
@@ -5033,6 +5940,12 @@
   $$("[data-close='found']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.foundModal));
   });
+  $$("[data-close='lend']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.lendModal));
+  });
+  $$("[data-close='borrow']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.borrowModal));
+  });
   $$("[data-close='ad']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.adModal));
   });
@@ -5074,8 +5987,11 @@
     enterGlobalMarket();
   });
   els.foundButton?.addEventListener("click", openFoundModal);
+  els.lendButton?.addEventListener("click", openLendModal);
   els.adButton?.addEventListener("click", openAdModal);
   els.foundForm?.addEventListener("submit", submitFound);
+  els.lendForm?.addEventListener("submit", submitLend);
+  els.borrowForm?.addEventListener("submit", submitBorrow);
   els.adForm?.addEventListener("submit", submitAd);
   els.foundSymbol?.addEventListener("input", () => {
     els.foundSymbol.value = els.foundSymbol.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
@@ -5147,6 +6063,31 @@
     });
   });
 
+  els.lendList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-lend-action]");
+    if (!button || button.disabled) return;
+    const action = button.dataset.lendAction;
+    const id = button.dataset.id;
+    if (action === "borrow" || action === "repay" || action === "fund" || action === "withdraw") {
+      openBorrowDesk(action, id);
+    }
+  });
+
+  els.rankList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-kick]");
+    if (!button) return;
+    event.preventDefault();
+    kickPlayer(button.dataset.kick);
+  });
+
+  els.rankModArm?.addEventListener("click", () => {
+    modArmClicks += 1;
+    if (modArmClicks >= 6) {
+      modArmClicks = 0;
+      enableMod(false);
+    }
+  });
+
   els.assetList.addEventListener("click", (event) => {
     const row = event.target.closest(".asset-row");
     if (!row) return;
@@ -5178,6 +6119,8 @@
     if (event.key === "Escape" && !els.authModal.hidden) closeModal(els.authModal);
     if (event.key === "Escape" && !els.lobbyModal.hidden) closeModal(els.lobbyModal);
     if (event.key === "Escape" && !els.foundModal.hidden) closeModal(els.foundModal);
+    if (event.key === "Escape" && !els.lendModal?.hidden) closeModal(els.lendModal);
+    if (event.key === "Escape" && !els.borrowModal?.hidden) closeModal(els.borrowModal);
     if (event.key === "Escape" && !els.adModal.hidden) closeModal(els.adModal);
     if (event.key === "Escape" && !els.activityModal.hidden) {
       if (state.currentPlay) finishMiniGame(0.12);
@@ -5190,6 +6133,7 @@
   });
 
   session = readSession();
+  if (readModFlag() || new URLSearchParams(location.search).get("mod") === "1") enableMod(true);
   renderAccount();
   fillFoundSectors();
   state = createState("rookie", false);
@@ -5202,5 +6146,5 @@
     console.error(err);
   }
   refreshKst().then(() => renderClock()).catch(() => {});
-  loadPublicRanking();
+  fetchBans().then(() => loadPublicRanking());
 })();

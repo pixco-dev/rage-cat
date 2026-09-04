@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904d">
+  <link rel="stylesheet" href="style.css?v=20260904h">
 </head>
 <body>
   <header class="site-header">
@@ -108,6 +108,7 @@
         <ol class="rank-strip" id="rank-strip" aria-label="자산 TOP 5"></ol>
         <div class="room-actions">
           <button type="button" id="found-button">회사 설립</button>
+          <button type="button" id="lend-button">대출회사</button>
           <button type="button" id="ad-button">광고 집행</button>
         </div>
       </div>
@@ -171,6 +172,17 @@
             </div>
             <div class="ad-ticker" id="ad-ticker">아직 올라온 광고가 없습니다. 회사를 세운 뒤 광고를 집행하세요.</div>
             <ul class="ad-list" id="ad-list"></ul>
+          </article>
+
+          <article class="lend-board" aria-label="대출 시장">
+            <div class="asset-section-head">
+              <div>
+                <h3>대출 시장</h3>
+                <span>학생 대출회사에서 돈을 빌릴 수 있습니다. 상장해서 투자하는 회사가 아닙니다. 이자는 교시가 끝날 때마다 붙고, 금리는 사장이 정합니다. 주식 회사가 있어도 대출회사는 따로 만들 수 있습니다.</span>
+              </div>
+            </div>
+            <p class="lend-debt" id="lend-debt" hidden></p>
+            <ul class="lend-list" id="lend-list"></ul>
           </article>
 
           <section class="activity-board" aria-label="주간 활동">
@@ -238,7 +250,7 @@
         <aside class="side-column">
           <article class="side-card rank-card">
             <div class="side-title">
-              <h3>자산 TOP 5</h3>
+              <h3 id="rank-mod-arm">자산 TOP 5</h3>
               <span>현금+평가액</span>
             </div>
             <ol class="rank-list" id="rank-list">
@@ -401,6 +413,38 @@
     </section>
   </div>
 
+  <div class="modal" id="lend-modal" hidden>
+    <div class="modal-backdrop" data-close="lend"></div>
+    <section class="setup-panel found-panel" role="dialog" aria-modal="true" aria-labelledby="lend-title">
+      <button class="modal-x" data-close="lend" type="button" aria-label="닫기">×</button>
+      <span class="overline">LEND DESK</span>
+      <h2 id="lend-title">대출회사 설립</h2>
+      <p>출자한 현금이 대출 재원이 됩니다. 상장 주식이 아니라, 다른 학생에게 돈을 빌려주고 교시가 끝날 때마다 이자를 받는 창구입니다. 주식 회사와 별도로 1곳까지 만들 수 있습니다.</p>
+      <form class="found-form" id="lend-form">
+        <label>상호<input id="lend-name" maxlength="12" required placeholder="예: 새벽캐피탈"></label>
+        <label>교시당 이자 (%)<input id="lend-rate" type="number" min="1" max="15" step="1" value="5" required></label>
+        <label>출자금 (만원)<input id="lend-seed" type="number" min="40" step="10" value="80" required></label>
+        <p class="form-error" id="lend-error" hidden></p>
+        <button class="cta-button setup-start" type="submit">대출회사 열기 <span>→</span></button>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal" id="borrow-modal" hidden>
+    <div class="modal-backdrop" data-close="borrow"></div>
+    <section class="setup-panel found-panel" role="dialog" aria-modal="true" aria-labelledby="borrow-title">
+      <button class="modal-x" data-close="borrow" type="button" aria-label="닫기">×</button>
+      <span class="overline">LOAN DESK</span>
+      <h2 id="borrow-title">대출 받기</h2>
+      <p id="borrow-lead">금리는 대출회사가 정한 비율로, 교시가 끝날 때마다 붙습니다.</p>
+      <form class="found-form" id="borrow-form">
+        <label>금액 (만원)<input id="borrow-amount" type="number" min="10" step="10" value="40" required></label>
+        <p class="form-error" id="borrow-error" hidden></p>
+        <button class="cta-button setup-start" type="submit">빌리기 <span>→</span></button>
+      </form>
+    </section>
+  </div>
+
   <div class="modal" id="ad-modal" hidden>
     <div class="modal-backdrop" data-close="ad"></div>
     <section class="setup-panel ad-panel" role="dialog" aria-modal="true" aria-labelledby="ad-title">
@@ -473,6 +517,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260904d"></script>
+  <script src="game.js?v=20260904h"></script>
 </body>
 </html>
