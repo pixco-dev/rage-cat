@@ -3132,6 +3132,304 @@ body.modal-open {
   font-size: 12px;
 }
 
+.gamble-panel {
+  text-align: left;
+  max-width: min(640px, 100%);
+}
+
+.gamble-lead,
+.gamble-status {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.gamble-status {
+  min-height: 1.4em;
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.gamble-create {
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.gamble-tables {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.gamble-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  background: #fbfaf3;
+  border: 1px solid var(--line);
+}
+
+.gamble-row b {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+.gamble-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gamble-row button {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--lime);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gamble-row button:disabled {
+  opacity: .45;
+}
+
+.gamble-table {
+  margin-top: 8px;
+  padding: 16px;
+  background: var(--ink);
+  color: #c5cec8;
+}
+
+.gamble-table h3 {
+  margin: 0 0 8px;
+  color: var(--white);
+  font-family: "Song Myung", serif;
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.gamble-table .gamble-meta {
+  margin: 0 0 14px;
+  color: var(--lime);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.gamble-seats {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  list-style: none;
+}
+
+.gamble-seats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+  font-size: 13px;
+}
+
+.gamble-seats em {
+  color: var(--lime);
+  font-style: normal;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.gamble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gamble-actions button {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--lime);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gamble-actions button.is-ghost {
+  color: #c5cec8;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,.22);
+}
+
+.gamble-actions button.is-hot {
+  color: var(--white);
+  background: var(--red);
+}
+
+.gamble-actions button:disabled {
+  opacity: .45;
+}
+
+.gamble-result {
+  margin-top: 12px;
+  padding: 12px;
+  color: var(--ink);
+  background: var(--white);
+  border-left: 4px solid var(--red);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.lottery-panel {
+  text-align: left;
+  max-width: min(560px, 100%);
+}
+
+.lottery-lead,
+.lottery-status {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.lottery-status {
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.lottery-pot {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 16px 18px;
+  background: var(--ink);
+  color: #c5cec8;
+}
+
+.lottery-pot span {
+  color: var(--lime);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.lottery-pot strong {
+  color: var(--white);
+  font-family: "Song Myung", serif;
+  font-size: clamp(28px, 5vw, 36px);
+  font-weight: 400;
+}
+
+.lottery-pot small {
+  color: #9aa59e;
+  font-size: 12px;
+}
+
+.lottery-mine {
+  margin: 0 0 14px;
+}
+
+.lottery-ticket-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+
+.lottery-ticket-list li {
+  padding: 10px 12px;
+  background: #fbfaf3;
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.lottery-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lottery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.lottery-actions .cta-button,
+.lottery-actions .ghost-button {
+  min-height: 48px;
+}
+
+.lottery-last {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #fff0ed;
+  border: 1px solid rgba(239, 91, 63, .35);
+  font-size: 13px;
+}
+
+.lottery-last b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--red);
+  font-size: 11px;
+}
+
+.promo-desk-panel {
+  text-align: left;
+  max-width: min(620px, 100%);
+}
+
+.promo-desk-lead {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.promo-desk-cards {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.promo-desk-cards article {
+  padding: 14px 16px;
+  background: #fbfaf3;
+  border: 1px solid var(--line);
+}
+
+.promo-desk-cards b {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 16px;
+}
+
+.promo-desk-cards p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.promo-desk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.promo-desk-actions .cta-button,
+.promo-desk-actions .ghost-button {
+  min-height: 44px;
+}
+
 .halt-screen[hidden] {
   display: none !important;
 }

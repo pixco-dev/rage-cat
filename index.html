@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904r">
+  <link rel="stylesheet" href="style.css?v=20260904ad">
 </head>
 <body>
   <header class="site-header">
@@ -110,6 +110,8 @@
           <button type="button" id="found-button">회사 설립</button>
           <button type="button" id="close-button" class="close-firm">폐업</button>
           <button type="button" id="lend-button">대출회사</button>
+          <button type="button" id="gamble-button">몰빵데스크</button>
+          <button type="button" id="lottery-button">복권</button>
           <button type="button" id="ad-button">광고 집행</button>
         </div>
       </div>
@@ -458,6 +460,49 @@
     </section>
   </div>
 
+  <div class="modal" id="gamble-modal" hidden>
+    <div class="modal-backdrop" data-close="gamble"></div>
+    <section class="setup-panel gamble-panel" role="dialog" aria-modal="true" aria-labelledby="gamble-title">
+      <button class="modal-x" data-close="gamble" type="button" aria-label="닫기">×</button>
+      <span class="overline">ALL-IN DESK</span>
+      <h2 id="gamble-title">몰빵데스크</h2>
+      <p class="gamble-lead">학생끼리 현금을 걸고 주사위 숫자가 큰 쪽이 이깁니다. 점심 12:20~13:10, 오후 4시 이후에만 열립니다. 방장이 시작 버튼을 누르면 입장 마감입니다.</p>
+      <p class="gamble-status" id="gamble-status" role="status"></p>
+      <div class="gamble-create" id="gamble-create">
+        <form class="found-form" id="gamble-create-form">
+          <label>바이인 (만원)<input id="gamble-stake" type="number" min="10" step="10" value="50" required></label>
+          <p class="form-error" id="gamble-create-error" hidden></p>
+          <button class="cta-button setup-start" type="submit">데스크 열기 <span>→</span></button>
+        </form>
+      </div>
+      <div class="gamble-tables" id="gamble-tables" aria-live="polite"></div>
+      <div class="gamble-table" id="gamble-active" hidden></div>
+    </section>
+  </div>
+
+  <div class="modal" id="lottery-modal" hidden>
+    <div class="modal-backdrop" data-close="lottery"></div>
+    <section class="setup-panel lottery-panel" role="dialog" aria-modal="true" aria-labelledby="lottery-title">
+      <button class="modal-x" data-close="lottery" type="button" aria-label="닫기">×</button>
+      <span class="overline">LOTTO DESK</span>
+      <h2 id="lottery-title">복권</h2>
+      <p class="lottery-lead">기본 상금 500만원에서 시작합니다. 장당 100만원이며, 산 금액만큼 상금에 더해집니다. 한 사람 최대 2장. 산 다음날 아침 8시 25분에 구매자 중 한 명이 전액을 받습니다.</p>
+      <p class="lottery-status" id="lottery-status" role="status"></p>
+      <div class="lottery-pot" id="lottery-pot">
+        <span>현재 상금</span>
+        <strong id="lottery-pot-value">500만원</strong>
+        <small id="lottery-draw-label">추첨 시각 확인 중</small>
+      </div>
+      <div class="lottery-mine" id="lottery-mine"></div>
+      <div class="lottery-actions">
+        <button type="button" class="cta-button" id="lottery-buy">복권 1장 사기 (100만원) <span>→</span></button>
+        <button type="button" class="ghost-button" id="lottery-force" hidden>테스트 추첨</button>
+      </div>
+      <p class="form-error" id="lottery-error" hidden></p>
+      <div class="lottery-last" id="lottery-last" hidden></div>
+    </section>
+  </div>
+
   <div class="modal" id="ad-modal" hidden>
     <div class="modal-backdrop" data-close="ad"></div>
     <section class="setup-panel ad-panel" role="dialog" aria-modal="true" aria-labelledby="ad-title">
@@ -526,6 +571,31 @@
     </section>
   </div>
 
+  <div class="modal" id="promo-desk-modal" hidden>
+    <div class="modal-backdrop" data-close="promo-desk"></div>
+    <section class="setup-panel promo-desk-panel" role="dialog" aria-modal="true" aria-labelledby="promo-desk-title">
+      <button class="modal-x" data-close="promo-desk" type="button" aria-label="닫기">×</button>
+      <span class="overline">NEW DESKS</span>
+      <h2 id="promo-desk-title">몰빵데스크 · 복권이 열렸습니다</h2>
+      <p class="promo-desk-lead">시장 위쪽 버튼에서 바로 들어갈 수 있습니다. 이 안내는 처음 들어온 계정에만 한 번 보입니다.</p>
+      <div class="promo-desk-cards">
+        <article>
+          <b>몰빵데스크</b>
+          <p>학생끼리 현금을 걸고 주사위 대전. 점심 12:20~13:10, 오후 4시 이후. 방장이 시작하면 입장 마감.</p>
+        </article>
+        <article>
+          <b>복권</b>
+          <p>기본 상금 500만원, 장당 100만원. 1인 2장까지. 산 다음날 아침 08:25에 한 명이 전액 수령.</p>
+        </article>
+      </div>
+      <div class="promo-desk-actions">
+        <button type="button" class="cta-button" id="promo-open-gamble">몰빵데스크 열기 <span>→</span></button>
+        <button type="button" class="ghost-button" id="promo-open-lottery">복권 보기</button>
+        <button type="button" class="ghost-button" data-close="promo-desk">닫기</button>
+      </div>
+    </section>
+  </div>
+
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <div class="halt-screen" id="halt-screen" hidden>
     <section class="halt-card" role="alertdialog" aria-modal="true" aria-labelledby="halt-title" aria-describedby="halt-lead">
@@ -542,8 +612,14 @@
   <script>
     (function () {
       try {
-        if (!new URLSearchParams(location.search).has("halt-preview")) return;
+        var q = new URLSearchParams(location.search);
         var screen = document.getElementById("halt-screen");
+        if (q.has("staff-test") || q.has("gamble-preview")) {
+          if (screen) screen.hidden = true;
+          document.body.classList.remove("is-halted");
+          return;
+        }
+        if (!q.has("halt-preview")) return;
         if (screen) screen.hidden = false;
         document.body.classList.add("is-halted");
       } catch (err) { /* ignore */ }
@@ -552,6 +628,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260904r"></script>
+  <script src="game.js?v=20260904ad"></script>
 </body>
 </html>

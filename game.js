@@ -17,6 +17,16 @@
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
   const CLIMATE_PATH = "bull-lab/climate";
+  const GAMBLE_PATH = "bull-lab/gamble/tables";
+  const GAMBLE_SETTLE_STORE = "bull-lab-gamble-settled-v1";
+  const MIN_GAMBLE_STAKE = 10;
+  const GAMBLE_MAX_SEATS = 5;
+  const LOTTERY_PATH = "bull-lab/lottery/current";
+  const LOTTERY_CLAIM_STORE = "bull-lab-lottery-claim-v1";
+  const LOTTERY_BASE_POT = 500;
+  const LOTTERY_TICKET_PRICE = 100;
+  const LOTTERY_MAX_TICKETS = 2;
+  const PROMO_DESK_STORE = "bull-lab-promo-desk-v1";
   const PRICE_BOTS = [
     { id: "tape-1", bias: 0.18 },
     { id: "tape-2", bias: -0.14 },
@@ -726,6 +736,28 @@
     closeMarketHint: $("#close-market-hint"),
     continueSeason: $("#continue-season"),
     weekResultTitle: $("#week-result-title"),
+    gambleButton: $("#gamble-button"),
+    gambleModal: $("#gamble-modal"),
+    gambleStatus: $("#gamble-status"),
+    gambleCreate: $("#gamble-create"),
+    gambleCreateForm: $("#gamble-create-form"),
+    gambleStake: $("#gamble-stake"),
+    gambleCreateError: $("#gamble-create-error"),
+    gambleTables: $("#gamble-tables"),
+    gambleActive: $("#gamble-active"),
+    lotteryButton: $("#lottery-button"),
+    lotteryModal: $("#lottery-modal"),
+    lotteryStatus: $("#lottery-status"),
+    lotteryPotValue: $("#lottery-pot-value"),
+    lotteryDrawLabel: $("#lottery-draw-label"),
+    lotteryMine: $("#lottery-mine"),
+    lotteryBuy: $("#lottery-buy"),
+    lotteryForce: $("#lottery-force"),
+    lotteryError: $("#lottery-error"),
+    lotteryLast: $("#lottery-last"),
+    promoDeskModal: $("#promo-desk-modal"),
+    promoOpenGamble: $("#promo-open-gamble"),
+    promoOpenLottery: $("#promo-open-lottery"),
     chatCreateForm: $("#chat-create-form"),
     chatRoomName: $("#chat-room-name"),
     chatRoomSelect: $("#chat-room-select"),
@@ -812,6 +844,14 @@
     climate: 0,
     climateUnsub: null,
     tradeLockUntil: 0,
+    gambleTables: {},
+    gambleUnsub: null,
+    gambleBusy: false,
+    gambleActiveId: "",
+    lottery: null,
+    lotteryUnsub: null,
+    lotteryBusy: false,
+    lotterySettleBusy: false,
   };
   const kstClock = {
     ok: false,
@@ -1040,6 +1080,7 @@
   }
 
   function isServerStopped() {
+    if (staffTestRequested()) return false;
     return !!serverStopped;
   }
 
@@ -1051,7 +1092,21 @@
     }
   }
 
+  function staffTestRequested() {
+    try {
+      const q = new URLSearchParams(location.search);
+      return q.has("staff-test") || q.has("gamble-preview");
+    } catch {
+      return false;
+    }
+  }
+
   function applyHalt(value) {
+    if (staffTestRequested()) {
+      serverStopped = false;
+      hideHaltedScreen();
+      return;
+    }
     if (haltPreviewRequested()) {
       serverStopped = true;
       showHaltedScreen();
@@ -1149,6 +1204,998 @@
     const handler = (snap) => applyClimate(snap.val());
     db.ref(CLIMATE_PATH).on("value", handler);
     worldSync.climateUnsub = handler;
+  }
+
+  function readGambleSettled() {
+    try {
+      return JSON.parse(localStorage.getItem(GAMBLE_SETTLE_STORE) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function markGambleSettled(tableId) {
+    if (!tableId) return;
+    try {
+      const all = readGambleSettled();
+      all[tableId] = Date.now();
+      localStorage.setItem(GAMBLE_SETTLE_STORE, JSON.stringify(all));
+    } catch { /* quota */ }
+  }
+
+  function gambleSpendableCash() {
+    if (!state) return 0;
+    return Math.max(0, round1(state.cash));
+  }
+
+  function gambleMinutesNow() {
+    try {
+      const parts = kstParts() || parseKstParts(kstNowMs());
+      if (!parts) return null;
+      return Number(parts.h) * 60 + Number(parts.mi);
+    } catch {
+      return null;
+    }
+  }
+
+  function isGambleHoursOpen() {
+    if (staffTestRequested()) return true;
+    const mins = gambleMinutesNow();
+    if (mins == null) return false;
+    const lunch = mins >= (12 * 60 + 20) && mins <= (13 * 60 + 10);
+    const afterFour = mins >= (16 * 60);
+    return lunch || afterFour;
+  }
+
+  function gambleHoursLabel() {
+    if (staffTestRequested()) return "스태프 테스트 · 시간 제한 무시";
+    if (isGambleHoursOpen()) {
+      const mins = gambleMinutesNow();
+      if (mins != null && mins >= 16 * 60) return "운영 중 · 오후 4시 이후";
+      return "운영 중 · 점심 12:20~13:10";
+    }
+    return "닫힘 · 점심 12:20~13:10 또는 오후 4시 이후만";
+  }
+
+  function gambleSeatList(table) {
+    return listFromMap(table?.seats).sort((a, b) => (Number(a.joinedAt) || 0) - (Number(b.joinedAt) || 0));
+  }
+
+  function gambleTablePath(id) {
+    return `${GAMBLE_PATH}/${safeFbKey(id)}`;
+  }
+
+  async function putGambleTable(table) {
+    if (!table?.id) return false;
+    const response = await firebaseRestRequest(gambleTablePath(table.id), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(table),
+    }, FIREBASE_WRITE_TIMEOUT_MS);
+    return response.ok;
+  }
+
+  async function patchGambleTable(id, patch) {
+    const response = await firebaseRestRequest(gambleTablePath(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }, FIREBASE_WRITE_TIMEOUT_MS);
+    return response.ok;
+  }
+
+  function applyGambleTables(value) {
+    const next = {};
+    listFromMap(value).forEach((row) => {
+      if (!row?.id) return;
+      next[row.id] = row;
+    });
+    worldSync.gambleTables = next;
+    tryApplyGambleSettlements();
+    if (els.gambleModal && !els.gambleModal.hidden) renderGambleModal();
+  }
+
+  function subscribeGamble() {
+    const db = firebaseDb();
+    if (!db) {
+      firebaseRestRequest(GAMBLE_PATH, {}, FIREBASE_READ_TIMEOUT_MS)
+        .then(async (res) => { if (res.ok) applyGambleTables(await res.json()); })
+        .catch(() => {});
+      return;
+    }
+    if (worldSync.gambleUnsub) return;
+    const handler = (snap) => applyGambleTables(snap.val());
+    db.ref(GAMBLE_PATH).on("value", handler);
+    worldSync.gambleUnsub = handler;
+  }
+
+  function openGambleModal() {
+    if (isServerStopped()) {
+      showHaltedScreen();
+      return;
+    }
+    if (!state?.active) {
+      toast("🎲", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
+    if (els.gambleCreateError) {
+      els.gambleCreateError.hidden = true;
+      els.gambleCreateError.textContent = "";
+    }
+    if (els.gambleStake) {
+      const max = Math.max(MIN_GAMBLE_STAKE, Math.floor(gambleSpendableCash() / 10) * 10);
+      els.gambleStake.max = String(max);
+      els.gambleStake.min = String(MIN_GAMBLE_STAKE);
+      els.gambleStake.value = String(Math.min(50, max));
+    }
+    renderGambleModal();
+    openModal(els.gambleModal);
+  }
+
+  function setGambleCreateError(msg) {
+    if (!els.gambleCreateError) return;
+    if (!msg) {
+      els.gambleCreateError.hidden = true;
+      els.gambleCreateError.textContent = "";
+      return;
+    }
+    els.gambleCreateError.hidden = false;
+    els.gambleCreateError.textContent = msg;
+  }
+
+  function myOpenGambleSeat() {
+    return Object.values(worldSync.gambleTables || {}).find((table) => {
+      if (!table || table.status === "done" || table.status === "cancelled") return false;
+      return !!seatOnTable(table, state?.playerId);
+    });
+  }
+
+  function seatOnTable(table, playerId) {
+    if (!table?.seats || !playerId) return null;
+    return table.seats[safeFbKey(playerId)] || table.seats[playerId] || null;
+  }
+
+  function renderGambleModal() {
+    if (!els.gambleModal) return;
+    const hoursOpen = isGambleHoursOpen();
+    const mine = myOpenGambleSeat();
+    const spendable = gambleSpendableCash();
+    if (els.gambleStatus) {
+      els.gambleStatus.textContent = isServerStopped()
+        ? "서버 정지 중 · 몰빵데스크 닫힘"
+        : mine
+          ? `참여 중 · 바이인 ${money(mine.stake)} · ${gambleHoursLabel()}`
+          : `${gambleHoursLabel()} · 현금 ${money(spendable)}까지`;
+    }
+    if (els.gambleCreate) els.gambleCreate.hidden = !!(mine || !hoursOpen || isServerStopped());
+    const openTables = Object.values(worldSync.gambleTables || {})
+      .filter((table) => table && (table.status === "open" || table.status === "locked" || table.status === "reveal"))
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    if (els.gambleTables) {
+      if (!hoursOpen && !mine) {
+        els.gambleTables.innerHTML = `<p class="gamble-status">지금은 닫혀 있습니다. 점심 12:20~13:10 또는 오후 4시 이후에 오세요.</p>`;
+      } else if (!openTables.length) {
+        els.gambleTables.innerHTML = `<p class="gamble-status">열린 데스크가 없습니다. 위에서 새로 열 수 있습니다.</p>`;
+      } else {
+        els.gambleTables.innerHTML = openTables.map((table) => {
+          const seats = gambleSeatList(table);
+          const seated = !!seatOnTable(table, state?.playerId);
+          const full = seats.length >= (table.maxSeats || GAMBLE_MAX_SEATS);
+          const canJoin = !seated && !mine && hoursOpen && table.status === "open" && !full && !isServerStopped();
+          const statusLabel = table.status === "open" ? "모집 중" : "시작됨 · 입장 마감";
+          return `<article class="gamble-row" data-table="${esc(table.id)}">
+            <div>
+              <b>주사위 · ${money(table.stake)}</b>
+              <span>${esc(table.hostName || table.hostId)} · ${seats.length}/${table.maxSeats || GAMBLE_MAX_SEATS}명 · ${esc(statusLabel)}</span>
+            </div>
+            <button type="button" data-gamble-join="${esc(table.id)}" ${canJoin ? "" : "disabled"}>${seated ? "내 자리" : table.status !== "open" ? "마감" : full ? "만원" : "참가"}</button>
+          </article>`;
+        }).join("");
+      }
+    }
+    const active = mine || (worldSync.gambleActiveId && worldSync.gambleTables[worldSync.gambleActiveId]) || null;
+    renderGambleActive(active);
+  }
+
+  function renderGambleActive(table) {
+    if (!els.gambleActive) return;
+    if (!table) {
+      els.gambleActive.hidden = true;
+      els.gambleActive.innerHTML = "";
+      return;
+    }
+    els.gambleActive.hidden = false;
+    const seats = gambleSeatList(table);
+    const me = seatOnTable(table, state?.playerId);
+    const isHost = table.hostId === state?.playerId;
+    const max = table.maxSeats || GAMBLE_MAX_SEATS;
+    let actions = "";
+    if (table.status === "open" && me) {
+      if (isHost && seats.length >= 2) {
+        actions += `<button type="button" class="is-hot" data-gamble-start="${esc(table.id)}">게임 시작</button>`;
+      } else if (isHost) {
+        actions += `<button type="button" class="is-hot" disabled>2명 이상이면 시작</button>`;
+      }
+      actions += `<button type="button" class="is-ghost" data-gamble-leave="${esc(table.id)}">${isHost ? "데스크 닫기" : "나가기"}</button>`;
+    }
+    if (table.status === "done" || table.status === "cancelled") {
+      actions += `<button type="button" class="is-ghost" data-close="gamble">닫기</button>`;
+    }
+    const resultHtml = table.result?.summary
+      ? `<div class="gamble-result">${esc(table.result.summary)}</div>`
+      : "";
+    const statusCopy = table.status === "open" ? "모집 중 · 시작 전 입장 가능" : table.status === "done" ? "종료" : String(table.status);
+    els.gambleActive.innerHTML = `
+      <h3>주사위</h3>
+      <p class="gamble-meta">바이인 ${money(table.stake)} · 팟 ${money(table.stake * seats.length)} · ${seats.length}/${max}명 · ${esc(statusCopy)}</p>
+      <ul class="gamble-seats">${seats.map((seat) => {
+        const bits = [];
+        if (seat.roll) bits.push(`${seat.roll}`);
+        if (table.result?.winners?.includes(seat.id)) bits.push("승");
+        return `<li><span>${esc(seat.name || seat.id)}${seat.id === state?.playerId ? " · 나" : ""}${seat.id === table.hostId ? " · 방장" : ""}</span><em>${esc(bits.join(" · ") || "대기")}</em></li>`;
+      }).join("")}</ul>
+      <div class="gamble-actions">${actions}</div>
+      ${resultHtml}
+    `;
+  }
+
+  function deductGambleStake(stake) {
+    const amount = round1(Number(stake) || 0);
+    if (amount < MIN_GAMBLE_STAKE) return { ok: false, err: "stake" };
+    if (gambleSpendableCash() + 1e-9 < amount) return { ok: false, err: "cash" };
+    state.cash = round1(state.cash - amount);
+    writeWallet();
+    queuePush();
+    renderSummary();
+    return { ok: true, amount };
+  }
+
+  function refundGambleStake(amount) {
+    const value = round1(Number(amount) || 0);
+    if (value <= 0) return;
+    state.cash = round1(state.cash + value);
+    writeWallet();
+    queuePush();
+    renderSummary();
+  }
+
+  function creditGambleWin(amount) {
+    const value = round1(Number(amount) || 0);
+    if (value <= 0) return;
+    state.cash = round1(state.cash + value);
+    writeWallet();
+    queuePush();
+    renderSummary();
+  }
+
+  async function createGambleTable(event) {
+    event.preventDefault();
+    if (worldSync.gambleBusy || isServerStopped() || !state?.active) return;
+    if (!isGambleHoursOpen()) {
+      setGambleCreateError("점심 12:20~13:10 또는 오후 4시 이후에만 열 수 있습니다.");
+      return;
+    }
+    if (myOpenGambleSeat()) {
+      setGambleCreateError("이미 다른 데스크에 앉아 있습니다.");
+      return;
+    }
+    let stake = Math.round(Number(els.gambleStake?.value) || 0);
+    stake = Math.floor(stake / 10) * 10;
+    const cashCap = Math.floor(gambleSpendableCash() / 10) * 10;
+    if (stake < MIN_GAMBLE_STAKE) {
+      setGambleCreateError(`바이인은 최소 ${MIN_GAMBLE_STAKE}만원입니다.`);
+      return;
+    }
+    if (stake > cashCap) {
+      setGambleCreateError(`보유 현금 ${money(cashCap)}까지 걸 수 있습니다.`);
+      return;
+    }
+    const paid = deductGambleStake(stake);
+    if (!paid.ok) {
+      setGambleCreateError(paid.err === "cash" ? "현금이 부족합니다." : "바이인을 확인하세요.");
+      return;
+    }
+    worldSync.gambleBusy = true;
+    setGambleCreateError("");
+    const id = makeId("gb");
+    const now = Date.now();
+    const table = {
+      id,
+      game: "dice",
+      stake,
+      maxSeats: GAMBLE_MAX_SEATS,
+      hostId: state.playerId,
+      hostName: state.playerName,
+      status: "open",
+      createdAt: now,
+      updatedAt: now,
+      seats: {
+        [safeFbKey(state.playerId)]: {
+          id: state.playerId,
+          name: state.playerName,
+          stake,
+          joinedAt: now,
+        },
+      },
+      seed: "",
+      result: null,
+    };
+    try {
+      const ok = await putGambleTable(table);
+      if (!ok) throw new Error("put");
+      worldSync.gambleTables[id] = table;
+      worldSync.gambleActiveId = id;
+      toast("🎲", "몰빵데스크", "주사위 데스크를 열었습니다. 2명 이상이면 시작할 수 있습니다.");
+      renderGambleModal();
+    } catch {
+      refundGambleStake(stake);
+      setGambleCreateError("데스크를 열지 못했습니다. 잠시 후 다시 시도하세요.");
+    } finally {
+      worldSync.gambleBusy = false;
+    }
+  }
+
+  async function joinGambleTable(tableId) {
+    if (worldSync.gambleBusy || isServerStopped() || !state?.active) return;
+    if (!isGambleHoursOpen()) {
+      toast("🎲", "닫힘", "점심 12:20~13:10 또는 오후 4시 이후에만 참가할 수 있습니다.");
+      return;
+    }
+    const table = worldSync.gambleTables[tableId];
+    if (!table || table.status !== "open") {
+      toast("🎲", "입장 마감", "이미 시작되어 더 이상 들어올 수 없습니다.");
+      return;
+    }
+    if (myOpenGambleSeat()) {
+      toast("🎲", "참가 중", "이미 다른 데스크에 앉아 있습니다.");
+      return;
+    }
+    if (seatOnTable(table, state.playerId)) return;
+    const seats = gambleSeatList(table);
+    if (seats.length >= (table.maxSeats || GAMBLE_MAX_SEATS)) {
+      toast("🎲", "만원", "자리가 없습니다.");
+      return;
+    }
+    const paid = deductGambleStake(table.stake);
+    if (!paid.ok) {
+      toast("🎲", "현금 부족", "보유 현금이 바이인보다 적습니다.");
+      return;
+    }
+    worldSync.gambleBusy = true;
+    const now = Date.now();
+    const seat = {
+      id: state.playerId,
+      name: state.playerName,
+      stake: table.stake,
+      joinedAt: now,
+    };
+    try {
+      const nextSeats = { ...(table.seats || {}), [safeFbKey(state.playerId)]: seat };
+      const ok = await patchGambleTable(tableId, { seats: nextSeats, updatedAt: now });
+      if (!ok) throw new Error("patch");
+      table.seats = nextSeats;
+      table.updatedAt = now;
+      worldSync.gambleActiveId = tableId;
+      toast("🎲", "참가", "주사위 데스크에 앉았습니다. 방장이 시작하면 입장 마감됩니다.");
+      renderGambleModal();
+    } catch {
+      refundGambleStake(table.stake);
+      toast("🎲", "참가 실패", "다시 시도해 주세요.");
+    } finally {
+      worldSync.gambleBusy = false;
+    }
+  }
+
+  async function leaveGambleTable(tableId) {
+    if (worldSync.gambleBusy || !state?.active) return;
+    const table = worldSync.gambleTables[tableId];
+    if (!table || table.status !== "open") {
+      toast("🎲", "진행 중", "이미 시작되어 나갈 수 없습니다.");
+      return;
+    }
+    const me = seatOnTable(table, state.playerId);
+    if (!me) return;
+    worldSync.gambleBusy = true;
+    try {
+      if (table.hostId === state.playerId) {
+        markGambleSettled(`${tableId}:refund:${state.playerId}`);
+        refundGambleStake(me.stake);
+        const cancelled = {
+          ...table,
+          status: "cancelled",
+          updatedAt: Date.now(),
+          result: {
+            summary: "방장이 데스크를 닫아 바이인을 돌려줍니다.",
+            refundAll: true,
+          },
+        };
+        const ok = await putGambleTable(cancelled);
+        if (!ok) throw new Error("put");
+        worldSync.gambleTables[tableId] = cancelled;
+        toast("🎲", "데스크 닫힘", "바이인을 돌려받았습니다.");
+      } else {
+        refundGambleStake(me.stake);
+        const nextSeats = { ...(table.seats || {}) };
+        delete nextSeats[safeFbKey(state.playerId)];
+        delete nextSeats[state.playerId];
+        await patchGambleTable(tableId, { seats: nextSeats, updatedAt: Date.now() });
+        table.seats = nextSeats;
+        toast("🎲", "나감", "바이인을 돌려받았습니다.");
+      }
+      worldSync.gambleActiveId = "";
+      renderGambleModal();
+    } catch {
+      toast("🎲", "실패", "나가기에 실패했습니다.");
+    } finally {
+      worldSync.gambleBusy = false;
+    }
+  }
+
+  function diceRollFromSeed(seed, playerId) {
+    return 1 + Math.floor(hashUnit(`${seed}|${playerId}|roll`) * 6);
+  }
+
+  function buildDiceResult(table, seed) {
+    const seats = gambleSeatList(table).map((seat) => {
+      const roll = diceRollFromSeed(seed, seat.id);
+      return { ...seat, roll };
+    });
+    const best = Math.max(...seats.map((s) => s.roll));
+    const winners = seats.filter((s) => s.roll === best).map((s) => s.id);
+    const pot = round1(table.stake * seats.length);
+    const share = round1(pot / winners.length);
+    const payouts = {};
+    winners.forEach((id) => { payouts[id] = share; });
+    const detail = seats.map((s) => `${s.name} ${s.roll}`).join(" · ");
+    const names = seats.filter((s) => winners.includes(s.id)).map((s) => s.name).join(", ");
+    return {
+      seed,
+      winners,
+      payouts,
+      pot,
+      seats: seats.map((s) => ({ id: s.id, roll: s.roll })),
+      summary: `${detail}. ${names} 승 · 각 ${money(share)}`,
+    };
+  }
+
+  async function startGambleTable(tableId) {
+    if (isServerStopped() || !state?.active) return;
+    const table = worldSync.gambleTables[tableId];
+    if (!table || table.status !== "open") return;
+    if (table.hostId !== state.playerId) {
+      toast("🎲", "방장만", "판을 연 사람만 게임을 시작할 수 있습니다.");
+      return;
+    }
+    const seats = gambleSeatList(table);
+    if (seats.length < 2) {
+      toast("🎲", "인원", "최소 2명이 필요합니다.");
+      return;
+    }
+    // Lock immediately so nobody joins mid-roll
+    worldSync.gambleBusy = true;
+    try {
+      const lockOk = await patchGambleTable(tableId, { status: "locked", updatedAt: Date.now() });
+      if (!lockOk) throw new Error("lock");
+      table.status = "locked";
+      const seed = `${tableId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const result = buildDiceResult(table, seed);
+      const nextSeats = { ...(table.seats || {}) };
+      (result.seats || []).forEach((row) => {
+        const key = safeFbKey(row.id);
+        if (nextSeats[key]) nextSeats[key] = { ...nextSeats[key], roll: row.roll };
+      });
+      const done = {
+        ...table,
+        seats: nextSeats,
+        seed,
+        status: "done",
+        updatedAt: Date.now(),
+        result,
+      };
+      const ok = await putGambleTable(done);
+      if (!ok) throw new Error("put");
+      worldSync.gambleTables[tableId] = done;
+      tryApplyGambleSettlements();
+      renderGambleModal();
+      tone(440, .08, "square");
+    } catch {
+      toast("🎲", "실패", "게임을 시작하지 못했습니다.");
+      if (table.status === "locked") {
+        await patchGambleTable(tableId, { status: "open", updatedAt: Date.now() }).catch(() => {});
+        table.status = "open";
+      }
+    } finally {
+      worldSync.gambleBusy = false;
+    }
+  }
+
+  function tryApplyGambleSettlements() {
+    if (!state?.active || !session?.id) return;
+    const me = state.playerId;
+    Object.values(worldSync.gambleTables || {}).forEach((table) => {
+      if (!table?.id) return;
+      const seat = seatOnTable(table, me);
+      if (!seat) return;
+
+      if (table.status === "cancelled" && table.result?.refundAll) {
+        const key = `${table.id}:refund:${me}`;
+        if (readGambleSettled()[key]) return;
+        refundGambleStake(seat.stake);
+        markGambleSettled(key);
+        toast("🎲", "환불", "데스크가 닫혀 바이인을 돌려받았습니다.");
+        return;
+      }
+
+      if (table.status !== "done" || !table.result) return;
+      const key = `${table.id}:payout:${me}`;
+      if (readGambleSettled()[key]) return;
+      const pay = round1(Number(table.result.payouts?.[me]) || 0);
+      if (pay > 0) creditGambleWin(pay);
+      markGambleSettled(key);
+      const won = (table.result.winners || []).includes(me);
+      toast("🎲", won ? "몰빵 승" : (pay > 0 ? "무승부 환불" : "몰빵 패"), table.result.summary || "");
+      if (won) tone(660, .12, "square");
+    });
+  }
+
+  function onGambleClick(event) {
+    const join = event.target.closest?.("[data-gamble-join]");
+    if (join) {
+      joinGambleTable(join.getAttribute("data-gamble-join"));
+      return;
+    }
+    const leave = event.target.closest?.("[data-gamble-leave]");
+    if (leave) {
+      leaveGambleTable(leave.getAttribute("data-gamble-leave"));
+      return;
+    }
+    const start = event.target.closest?.("[data-gamble-start]");
+    if (start) {
+      startGambleTable(start.getAttribute("data-gamble-start"));
+    }
+  }
+
+  function readLotteryClaims() {
+    try {
+      return JSON.parse(localStorage.getItem(LOTTERY_CLAIM_STORE) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function markLotteryClaimed(drawId) {
+    if (!drawId) return;
+    try {
+      const all = readLotteryClaims();
+      all[drawId] = Date.now();
+      localStorage.setItem(LOTTERY_CLAIM_STORE, JSON.stringify(all));
+    } catch { /* quota */ }
+  }
+
+  function lotteryTicketList(row) {
+    return listFromMap(row?.tickets).sort((a, b) => (Number(a.boughtAt) || 0) - (Number(b.boughtAt) || 0));
+  }
+
+  function myLotteryTickets(row, playerId = state?.playerId) {
+    return lotteryTicketList(row).filter((t) => t.playerId === playerId);
+  }
+
+  function nextLotteryDrawTarget(fromMs = kstClock.ok ? kstNowMs() : Date.now()) {
+    const parts = parseKstParts(fromMs);
+    const mins = parts.h * 60 + parts.mi + (parts.s || 0) / 60;
+    // drawId = 복권 구매일(표시용 오늘). 지급은 그다음 날 08:25.
+    // 아침 08:25 전이면 아직 전날 회차(지급은 오늘 08:25).
+    if (mins < (8 * 60 + 25)) {
+      const buyYmd = shiftYmd(parts.ymd, -1);
+      return {
+        drawId: buyYmd,
+        drawAt: kstMsFromYmdHm(parts.ymd, 8, 25),
+        payYmd: parts.ymd,
+      };
+    }
+    return {
+      drawId: parts.ymd,
+      drawAt: kstMsFromYmdHm(shiftYmd(parts.ymd, 1), 8, 25),
+      payYmd: shiftYmd(parts.ymd, 1),
+    };
+  }
+
+  function lotteryPayYmd(row) {
+    if (!row?.drawId) return "";
+    if (row.drawAt) {
+      try { return parseKstParts(Number(row.drawAt)).ymd; } catch { /* fall through */ }
+    }
+    return shiftYmd(row.drawId, 1);
+  }
+
+  function healLotteryDrawSchedule(row, fromMs = kstClock.ok ? kstNowMs() : Date.now()) {
+    if (!row || row.status !== "open") return row;
+    const correct = nextLotteryDrawTarget(fromMs);
+    const today = parseKstParts(fromMs).ymd;
+    let next = row;
+    if (row.drawId !== correct.drawId || Number(row.drawAt) !== Number(correct.drawAt)) {
+      next = {
+        ...next,
+        drawId: correct.drawId,
+        drawAt: correct.drawAt,
+        updatedAt: Date.now(),
+      };
+    }
+    // Test draws left future "지난 당첨" dates — drop them if after today.
+    if (next.lastDrawId && next.lastDrawId > today) {
+      next = {
+        ...next,
+        lastWinnerId: "",
+        lastWinnerName: "",
+        lastWinAmount: 0,
+        lastDrawId: "",
+        updatedAt: Date.now(),
+      };
+    }
+    return next;
+  }
+
+  function freshLotteryRound(fromMs) {
+    const target = nextLotteryDrawTarget(fromMs);
+    return {
+      drawId: target.drawId,
+      drawAt: target.drawAt,
+      pot: LOTTERY_BASE_POT,
+      tickets: {},
+      status: "open",
+      winnerId: "",
+      winnerName: "",
+      winAmount: 0,
+      lastWinnerId: "",
+      lastWinnerName: "",
+      lastWinAmount: 0,
+      lastDrawId: "",
+      updatedAt: Date.now(),
+    };
+  }
+
+  function normalizeLottery(row) {
+    if (!row || typeof row !== "object") return null;
+    const tickets = {};
+    lotteryTicketList(row).forEach((t) => {
+      if (!t?.id) return;
+      tickets[safeFbKey(t.id)] = {
+        id: String(t.id),
+        playerId: String(t.playerId || ""),
+        playerName: String(t.playerName || t.playerId || ""),
+        boughtAt: Number(t.boughtAt) || 0,
+      };
+    });
+    return {
+      drawId: String(row.drawId || ""),
+      drawAt: Number(row.drawAt) || 0,
+      pot: Math.max(LOTTERY_BASE_POT, round1(Number(row.pot) || LOTTERY_BASE_POT)),
+      tickets,
+      status: row.status === "paid" || row.status === "drawing" ? row.status : "open",
+      winnerId: String(row.winnerId || ""),
+      winnerName: String(row.winnerName || ""),
+      winAmount: round1(Number(row.winAmount) || 0),
+      lastWinnerId: String(row.lastWinnerId || ""),
+      lastWinnerName: String(row.lastWinnerName || ""),
+      lastWinAmount: round1(Number(row.lastWinAmount) || 0),
+      lastDrawId: String(row.lastDrawId || ""),
+      pendingPay: row.pendingPay && typeof row.pendingPay === "object" ? {
+        drawId: String(row.pendingPay.drawId || ""),
+        playerId: String(row.pendingPay.playerId || ""),
+        playerName: String(row.pendingPay.playerName || ""),
+        amount: round1(Number(row.pendingPay.amount) || 0),
+        at: Number(row.pendingPay.at) || 0,
+      } : null,
+      updatedAt: Number(row.updatedAt) || 0,
+    };
+  }
+
+  function applyLottery(value) {
+    const normalized = healLotteryDrawSchedule(normalizeLottery(value));
+    worldSync.lottery = normalized;
+    const rawId = value && typeof value === "object" ? String(value.drawId || "") : "";
+    if (normalized?.drawId && rawId && normalized.drawId !== rawId) {
+      const db = firebaseDb();
+      if (db) {
+        db.ref(LOTTERY_PATH).transaction((current) => {
+          const cur = normalizeLottery(current);
+          if (!cur || cur.status !== "open") return;
+          const healed = healLotteryDrawSchedule(cur);
+          if (healed.drawId === cur.drawId && healed.drawAt === cur.drawAt) return;
+          return healed;
+        }).catch(() => {});
+      }
+    }
+    tryClaimLotteryWin();
+    if (els.lotteryModal && !els.lotteryModal.hidden) renderLotteryModal();
+  }
+
+  function subscribeLottery() {
+    const db = firebaseDb();
+    if (!db) {
+      firebaseRestRequest(LOTTERY_PATH, {}, FIREBASE_READ_TIMEOUT_MS)
+        .then(async (res) => { if (res.ok) applyLottery(await res.json()); })
+        .catch(() => {});
+      return;
+    }
+    if (worldSync.lotteryUnsub) return;
+    const handler = (snap) => applyLottery(snap.val());
+    db.ref(LOTTERY_PATH).on("value", handler);
+    worldSync.lotteryUnsub = handler;
+  }
+
+  async function ensureLotteryRound() {
+    const existing = healLotteryDrawSchedule(normalizeLottery(worldSync.lottery));
+    if (existing?.drawId && existing.drawAt) {
+      worldSync.lottery = existing;
+      return existing;
+    }
+    const db = firebaseDb();
+    const fresh = freshLotteryRound();
+    if (db) {
+      const result = await db.ref(LOTTERY_PATH).transaction((current) => {
+        const cur = healLotteryDrawSchedule(normalizeLottery(current));
+        if (cur?.drawId && cur.drawAt) return cur;
+        return fresh;
+      }, undefined, false);
+      const val = healLotteryDrawSchedule(normalizeLottery(result.snapshot.val()));
+      worldSync.lottery = val || fresh;
+      return worldSync.lottery;
+    }
+    const res = await firebaseRestRequest(LOTTERY_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fresh),
+    }, FIREBASE_WRITE_TIMEOUT_MS);
+    if (res.ok) {
+      worldSync.lottery = fresh;
+      return fresh;
+    }
+    return null;
+  }
+
+  function openLotteryModal() {
+    if (isServerStopped()) {
+      showHaltedScreen();
+      return;
+    }
+    if (!state?.active) {
+      toast("🎟️", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
+      return;
+    }
+    if (els.lotteryError) {
+      els.lotteryError.hidden = true;
+      els.lotteryError.textContent = "";
+    }
+    if (els.lotteryForce) els.lotteryForce.hidden = !staffTestRequested();
+    ensureLotteryRound().then(() => {
+      renderLotteryModal();
+      maybeSettleLottery();
+    });
+    openModal(els.lotteryModal);
+  }
+
+  function renderLotteryModal() {
+    if (!els.lotteryModal) return;
+    const row = worldSync.lottery;
+    const tickets = lotteryTicketList(row);
+    const mine = myLotteryTickets(row);
+    const pot = row ? round1(row.pot) : LOTTERY_BASE_POT;
+    if (els.lotteryPotValue) els.lotteryPotValue.textContent = money(pot);
+    if (els.lotteryDrawLabel) {
+      const payYmd = lotteryPayYmd(row);
+      els.lotteryDrawLabel.textContent = row?.drawId
+        ? `이번 회차 지급 ${payYmd || "다음날"} 08:25 · 현재 ${tickets.length}장`
+        : "회차 준비 중";
+    }
+    if (els.lotteryStatus) {
+      els.lotteryStatus.textContent = mine.length
+        ? `내 복권 ${mine.length}/${LOTTERY_MAX_TICKETS}장 · 지급은 산 다음날 08:25`
+        : `1인 최대 ${LOTTERY_MAX_TICKETS}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`;
+    }
+    if (els.lotteryMine) {
+      els.lotteryMine.innerHTML = mine.length
+        ? `<ul class="lottery-ticket-list">${mine.map((t, i) => `<li>내 복권 ${i + 1} · ${esc(t.id)}</li>`).join("")}</ul>`
+        : `<p class="lottery-empty">아직 산 복권이 없습니다.</p>`;
+    }
+    if (els.lotteryBuy) {
+      els.lotteryBuy.disabled = !row || row.status !== "open" || mine.length >= LOTTERY_MAX_TICKETS || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
+      els.lotteryBuy.textContent = mine.length >= LOTTERY_MAX_TICKETS
+        ? `최대 ${LOTTERY_MAX_TICKETS}장까지`
+        : `복권 1장 사기 (${money(LOTTERY_TICKET_PRICE)}) →`;
+    }
+    if (els.lotteryLast) {
+      if (row?.lastWinnerId) {
+        els.lotteryLast.hidden = false;
+        els.lotteryLast.innerHTML = `<b>지난 당첨</b><span>${esc(row.lastWinnerName || row.lastWinnerId)} · ${money(row.lastWinAmount || 0)} · 구매일 ${esc(row.lastDrawId || "")}</span>`;
+      } else {
+        els.lotteryLast.hidden = true;
+        els.lotteryLast.innerHTML = "";
+      }
+    }
+  }
+
+  function setLotteryError(msg) {
+    if (!els.lotteryError) return;
+    if (!msg) {
+      els.lotteryError.hidden = true;
+      els.lotteryError.textContent = "";
+      return;
+    }
+    els.lotteryError.hidden = false;
+    els.lotteryError.textContent = msg;
+  }
+
+  async function buyLotteryTicket() {
+    if (worldSync.lotteryBusy || isServerStopped() || !state?.active) return;
+    setLotteryError("");
+    if (round1(state.cash) < LOTTERY_TICKET_PRICE) {
+      setLotteryError("현금이 부족합니다.");
+      return;
+    }
+    worldSync.lotteryBusy = true;
+    if (els.lotteryBuy) els.lotteryBuy.disabled = true;
+    try {
+      await ensureLotteryRound();
+      const db = firebaseDb();
+      const ticketId = makeId("lt");
+      const now = Date.now();
+      let bought = false;
+      if (db) {
+        const result = await db.ref(LOTTERY_PATH).transaction((current) => {
+          const row = normalizeLottery(current) || freshLotteryRound();
+          if (row.status !== "open") return;
+          const mine = myLotteryTickets(row, state.playerId);
+          if (mine.length >= LOTTERY_MAX_TICKETS) return;
+          row.tickets = row.tickets || {};
+          row.tickets[safeFbKey(ticketId)] = {
+            id: ticketId,
+            playerId: state.playerId,
+            playerName: state.playerName,
+            boughtAt: now,
+          };
+          row.pot = round1(Math.max(LOTTERY_BASE_POT, Number(row.pot) || LOTTERY_BASE_POT) + LOTTERY_TICKET_PRICE);
+          row.updatedAt = now;
+          row.status = "open";
+          return row;
+        }, undefined, false);
+        bought = !!result.committed;
+        if (bought) applyLottery(result.snapshot.val());
+        else {
+          const snap = normalizeLottery(result.snapshot.val());
+          const mine = myLotteryTickets(snap, state.playerId);
+          setLotteryError(mine.length >= LOTTERY_MAX_TICKETS ? "한 사람당 최대 2장입니다." : "지금은 살 수 없습니다.");
+        }
+      } else {
+        setLotteryError("서버에 연결되지 않았습니다.");
+      }
+      if (bought) {
+        state.cash = round1(state.cash - LOTTERY_TICKET_PRICE);
+        writeWallet();
+        queuePush();
+        renderSummary();
+        toast("🎟️", "복권 구매", `100만원을 넣고 상금이 ${money(worldSync.lottery?.pot || 0)}가 되었습니다.`);
+        renderLotteryModal();
+      }
+    } catch {
+      setLotteryError("구매에 실패했습니다. 잠시 후 다시 시도하세요.");
+    } finally {
+      worldSync.lotteryBusy = false;
+      renderLotteryModal();
+    }
+  }
+
+  function pickLotteryWinner(tickets, seed) {
+    if (!tickets.length) return null;
+    const idx = Math.floor(hashUnit(`${seed}|lotto`) * tickets.length) % tickets.length;
+    return tickets[idx];
+  }
+
+  async function maybeSettleLottery(force = false) {
+    if (worldSync.lotterySettleBusy || isServerStopped()) return;
+    const row = normalizeLottery(worldSync.lottery);
+    if (!row?.drawId || row.status !== "open") return;
+    const now = kstClock.ok ? kstNowMs() : Date.now();
+    if (!force && now < Number(row.drawAt || 0)) return;
+    const db = firebaseDb();
+    if (!db) return;
+    worldSync.lotterySettleBusy = true;
+    try {
+      const result = await db.ref(LOTTERY_PATH).transaction((current) => {
+        const cur = normalizeLottery(current);
+        if (!cur || cur.status !== "open") return;
+        const ts = kstClock.ok ? kstNowMs() : Date.now();
+        if (!force && ts < Number(cur.drawAt || 0)) return;
+        const tickets = lotteryTicketList(cur);
+        // Next round is always the next 08:25 from *now*, not old drawAt+1 day
+        // (force/test draws were skipping an extra day).
+        const nextTarget = nextLotteryDrawTarget(ts + 1000);
+        if (!tickets.length) {
+          return {
+            ...cur,
+            drawId: nextTarget.drawId,
+            drawAt: nextTarget.drawAt,
+            pot: LOTTERY_BASE_POT,
+            tickets: {},
+            status: "open",
+            winnerId: "",
+            winnerName: "",
+            winAmount: 0,
+            updatedAt: Date.now(),
+          };
+        }
+        const winner = pickLotteryWinner(tickets, `${cur.drawId}|${cur.drawAt}|${tickets.length}`);
+        const amount = round1(Number(cur.pot) || LOTTERY_BASE_POT);
+        return {
+          drawId: nextTarget.drawId,
+          drawAt: nextTarget.drawAt,
+          pot: LOTTERY_BASE_POT,
+          tickets: {},
+          status: "open",
+          winnerId: "",
+          winnerName: "",
+          winAmount: 0,
+          lastWinnerId: winner.playerId,
+          lastWinnerName: winner.playerName || winner.playerId,
+          lastWinAmount: amount,
+          lastDrawId: cur.drawId,
+          pendingPay: {
+            drawId: cur.drawId,
+            playerId: winner.playerId,
+            playerName: winner.playerName || winner.playerId,
+            amount,
+            at: Date.now(),
+          },
+          updatedAt: Date.now(),
+        };
+      }, undefined, false);
+      if (result.committed) {
+        applyLottery(result.snapshot.val());
+        tryClaimLotteryWin();
+        if (els.lotteryModal && !els.lotteryModal.hidden) renderLotteryModal();
+      }
+    } catch {
+      /* retry next tick */
+    } finally {
+      worldSync.lotterySettleBusy = false;
+    }
+  }
+
+  function tryClaimLotteryWin() {
+    if (!state?.active || !state.playerId) return;
+    const row = worldSync.lottery;
+    const pay = row?.pendingPay;
+    if (!pay || pay.playerId !== state.playerId) return;
+    const key = `${pay.drawId}:${pay.playerId}`;
+    if (readLotteryClaims()[key]) return;
+    const amount = round1(Number(pay.amount) || 0);
+    if (amount <= 0) return;
+    markLotteryClaimed(key);
+    state.cash = round1(state.cash + amount);
+    writeWallet();
+    queuePush();
+    renderSummary();
+    toast("🎟️", "복권 당첨", `${money(amount)}을 받았습니다. (${pay.drawId} 추첨)`);
+    tone(660, .14, "square");
+    const db = firebaseDb();
+    if (db) {
+      db.ref(LOTTERY_PATH).transaction((current) => {
+        if (!current?.pendingPay || current.pendingPay.playerId !== state.playerId) return;
+        if (String(current.pendingPay.drawId) !== String(pay.drawId)) return;
+        const next = { ...current };
+        delete next.pendingPay;
+        next.paidAt = Date.now();
+        next.updatedAt = Date.now();
+        return next;
+      }).catch(() => {});
+    }
+  }
+
+  async function forceLotteryDraw() {
+    if (!staffTestRequested()) return;
+    await maybeSettleLottery(true);
+    toast("🎟️", "테스트 추첨", "강제 추첨을 실행했습니다.");
+    renderLotteryModal();
   }
 
   function normalizeChatRoom(room) {
@@ -4188,7 +5235,11 @@
     renderClock();
     if (isDeskEditing()) return;
     await maybeSettleFromClock();
-    if (state?.active) renderRoom();
+    if (state?.active) {
+      maybeSettleLottery();
+      tryClaimLotteryWin();
+      renderRoom();
+    }
   }
 
   function startWorldLoop() {
@@ -6297,6 +7348,46 @@
     if (els.marketNav) els.marketNav.hidden = false;
     document.body.classList.add("in-play");
     if (els.hero) els.hero.hidden = true;
+    maybeShowDeskPromo();
+  }
+
+  function readDeskPromoSeen() {
+    try {
+      return JSON.parse(localStorage.getItem(PROMO_DESK_STORE) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function markDeskPromoSeen(id) {
+    if (!id) return;
+    try {
+      const all = readDeskPromoSeen();
+      all[id] = Date.now();
+      localStorage.setItem(PROMO_DESK_STORE, JSON.stringify(all));
+    } catch { /* quota */ }
+  }
+
+  function hasSeenDeskPromo(id) {
+    return !!(id && readDeskPromoSeen()[id]);
+  }
+
+  function closeDeskPromo() {
+    const id = session?.id || state?.playerId;
+    markDeskPromoSeen(id);
+    closeModal(els.promoDeskModal);
+  }
+
+  function maybeShowDeskPromo() {
+    if (isServerStopped()) return;
+    if (!state?.active) return;
+    const id = session?.id || state?.playerId;
+    if (!id || hasSeenDeskPromo(id)) return;
+    if (!els.promoDeskModal || !els.promoDeskModal.hidden) return;
+    requestAnimationFrame(() => {
+      if (!state?.active || hasSeenDeskPromo(id)) return;
+      openModal(els.promoDeskModal);
+    });
   }
 
   function bootRun() {
@@ -6377,7 +7468,7 @@
   }
 
   function allModals() {
-    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.closeModal, els.lendModal, els.borrowModal, els.adModal].filter(Boolean);
+    return [els.setupModal, els.weekModal, els.endModal, els.activityModal, els.authModal, els.lobbyModal, els.foundModal, els.closeModal, els.lendModal, els.borrowModal, els.adModal, els.gambleModal, els.lotteryModal, els.promoDeskModal].filter(Boolean);
   }
 
   function closeModal(modal) {
@@ -6486,6 +7577,27 @@
   $$("[data-close='ad']").forEach((button) => {
     button.addEventListener("click", () => closeModal(els.adModal));
   });
+  $$("[data-close='gamble']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.gambleModal));
+  });
+  $$("[data-close='lottery']").forEach((button) => {
+    button.addEventListener("click", () => closeModal(els.lotteryModal));
+  });
+  $$("[data-close='promo-desk']").forEach((button) => {
+    button.addEventListener("click", () => closeDeskPromo());
+  });
+  els.promoOpenGamble?.addEventListener("click", () => {
+    closeDeskPromo();
+    openGambleModal();
+  });
+  els.promoOpenLottery?.addEventListener("click", () => {
+    closeDeskPromo();
+    openLotteryModal();
+  });
+  els.lotteryBuy?.addEventListener("click", buyLotteryTicket);
+  els.lotteryForce?.addEventListener("click", forceLotteryDraw);
+  els.gambleCreateForm?.addEventListener("submit", createGambleTable);
+  els.gambleModal?.addEventListener("click", onGambleClick);
   els.nextWeek?.addEventListener("click", nextWeek);
   els.closeMarket?.addEventListener("click", closeMarket);
   els.clearLog?.addEventListener("click", () => {
@@ -6527,6 +7639,8 @@
   els.closeButton?.addEventListener("click", openCloseModal);
   els.closeConfirm?.addEventListener("click", submitCloseCompany);
   els.lendButton?.addEventListener("click", openLendModal);
+  els.gambleButton?.addEventListener("click", openGambleModal);
+  els.lotteryButton?.addEventListener("click", openLotteryModal);
   els.adButton?.addEventListener("click", openAdModal);
   els.foundForm?.addEventListener("submit", submitFound);
   els.lendForm?.addEventListener("submit", submitLend);
@@ -6647,6 +7761,9 @@
     if (event.key === "Escape" && !els.lendModal?.hidden) closeModal(els.lendModal);
     if (event.key === "Escape" && !els.borrowModal?.hidden) closeModal(els.borrowModal);
     if (event.key === "Escape" && !els.adModal.hidden) closeModal(els.adModal);
+    if (event.key === "Escape" && !els.gambleModal?.hidden) closeModal(els.gambleModal);
+    if (event.key === "Escape" && !els.lotteryModal?.hidden) closeModal(els.lotteryModal);
+    if (event.key === "Escape" && !els.promoDeskModal?.hidden) closeDeskPromo();
     if (event.key === "Escape" && !els.activityModal.hidden) {
       if (state.currentPlay) finishMiniGame(0.12);
       else closeModal(els.activityModal);
@@ -6675,5 +7792,12 @@
   subscribeHalt();
   fetchClimate();
   subscribeClimate();
-  if (haltPreviewRequested()) applyHalt({ stopped: true });
+  subscribeGamble();
+  subscribeLottery();
+  if (staffTestRequested()) {
+    hideHaltedScreen();
+    toast("🛠️", "스태프 테스트", "서버는 정지된 채로, 이 창만 정지를 무시합니다.");
+  } else if (haltPreviewRequested()) {
+    applyHalt({ stopped: true });
+  }
 })();
