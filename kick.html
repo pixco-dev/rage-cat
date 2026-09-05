@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904j">
+  <link rel="stylesheet" href="style.css?v=20260904q">
 </head>
 <body class="kick-desk">
   <header class="site-header">
@@ -26,7 +26,7 @@
   <main class="kick-main">
     <p class="overline">STAFF ONLY</p>
     <h1>강퇴 데스크</h1>
-    <p class="kick-lead">강퇴와 서버 정지는 이 페이지에서만 됩니다. 이 주소는 학생 화면에 없습니다.</p>
+    <p class="kick-lead">강퇴, 서버 정지, 상승·하락장 조절은 이 페이지에서만 됩니다. 이 주소는 학생 화면에 없습니다.</p>
     <p class="kick-status" id="kick-status">연결 중…</p>
 
     <section class="kick-halt" id="kick-halt">
@@ -35,6 +35,19 @@
         <p id="halt-copy">상태를 확인하는 중…</p>
       </div>
       <button type="button" class="kick-button" id="halt-toggle">서버 정지</button>
+    </section>
+
+    <section class="kick-climate" id="kick-climate">
+      <div>
+        <h2>장세</h2>
+        <p id="climate-copy">0은 보통, 플러스는 상승장, 마이너스는 하락장입니다. 학생 회사 주가는 바로 움직이고, 한빛테크 등 기본 종목은 다음 주가 공개 때 더 반영됩니다.</p>
+      </div>
+      <form class="kick-climate-form" id="climate-form">
+        <label>장세 (-10 ~ 10)
+          <input id="climate-tone" type="number" min="-10" max="10" step="1" value="0" required>
+        </label>
+        <button type="submit" class="cta-button" id="climate-save">장세 저장 <span>→</span></button>
+      </form>
     </section>
 
     <div class="kick-toolbar">
@@ -54,6 +67,6 @@
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <script src="market-config.js?v=20260903"></script>
-  <script src="kick.js?v=20260904j"></script>
+  <script src="kick.js?v=20260904q"></script>
 </body>
 </html>

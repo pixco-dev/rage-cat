@@ -3002,6 +3002,52 @@ body.modal-open {
   border-color: var(--red);
 }
 
+.kick-climate {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0 8px;
+  padding: 16px 18px;
+  background: var(--white);
+  border: 1px solid var(--line);
+}
+
+.kick-climate h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.kick-climate p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.kick-climate-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.kick-climate-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kick-climate-form input {
+  width: 120px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+.kick-climate-form .cta-button {
+  min-height: 44px;
+}
+
 .kick-halt h2 {
   margin: 0 0 4px;
   font-size: 16px;

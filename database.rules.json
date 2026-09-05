@@ -24,6 +24,9 @@
           }
         }
       },
+      "climate": {
+        ".validate": "newData.hasChildren(['tone', 'at']) && newData.child('tone').isNumber() && newData.child('tone').val() >= -10 && newData.child('tone').val() <= 10 && newData.child('at').isNumber()"
+      },
       "presence": {
         "$player": {
           "$client": {

@@ -16,6 +16,14 @@
   const CLIENT_BUILD = "20260904d";
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
+  const CLIMATE_PATH = "bull-lab/climate";
+  const PRICE_BOTS = [
+    { id: "tape-1", bias: 0.18 },
+    { id: "tape-2", bias: -0.14 },
+    { id: "tape-3", bias: 0.04 },
+    { id: "tape-4", bias: 0.1 },
+    { id: "tape-5", bias: -0.12 },
+  ];
   const DEVICE_STORE = "bull-lab-device-v1";
   const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v1";
   const DEVICE_PATH = "bull-lab/devices";
@@ -800,6 +808,8 @@
     unsub: null,
     banUnsub: null,
     haltUnsub: null,
+    climate: 0,
+    climateUnsub: null,
     tradeLockUntil: 0,
   };
   const kstClock = {
@@ -1071,6 +1081,44 @@
     const handler = (snap) => applyHalt(snap.val());
     db.ref(HALT_PATH).on("value", handler);
     worldSync.haltUnsub = handler;
+  }
+
+  function climateTone() {
+    const n = Number(worldSync.climate);
+    return Number.isFinite(n) ? Math.max(-10, Math.min(10, n)) : 0;
+  }
+
+  function applyClimate(value) {
+    const tone = Number(value?.tone);
+    const next = Number.isFinite(tone) ? Math.max(-10, Math.min(10, Math.round(tone))) : 0;
+    const changed = next !== Number(worldSync.climate || 0);
+    worldSync.climate = next;
+    if (changed && state?.active && typeof renderAll === "function" && !isDeskEditing()) {
+      liveCompanies().forEach((asset) => pushTick(asset, quotePrice(asset)));
+      renderAll();
+    }
+  }
+
+  async function fetchClimate() {
+    try {
+      const response = await firebaseRestRequest(CLIMATE_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return;
+      applyClimate(await response.json());
+    } catch {
+      /* keep local climate */
+    }
+  }
+
+  function subscribeClimate() {
+    const db = firebaseDb();
+    if (!db) {
+      fetchClimate();
+      return;
+    }
+    if (worldSync.climateUnsub) return;
+    const handler = (snap) => applyClimate(snap.val());
+    db.ref(CLIMATE_PATH).on("value", handler);
+    worldSync.climateUnsub = handler;
   }
 
   function normalizeChatRoom(room) {
@@ -2128,7 +2176,7 @@
   function holdingsValueOf(holdings) {
     return state.assets.reduce((sum, asset) => {
       const qty = holdings?.[asset.id]?.qty || 0;
-      return sum + asset.price * qty;
+      return sum + quotePrice(asset) * qty;
     }, 0);
   }
 
@@ -2324,6 +2372,37 @@
     return signed * mag;
   }
 
+  function currentBotBucket() {
+    return Math.floor((kstClock.ok ? kstNowMs() : Date.now()) / 7000);
+  }
+
+  function botFlowFor(asset, bucket = currentBotBucket()) {
+    if (!asset || !isSchoolListing(asset)) return 0;
+    const climate = climateTone();
+    let qty = 0;
+    PRICE_BOTS.forEach((bot) => {
+      const fire = hashUnit(`${asset.id}|${bot.id}|${bucket}|fire`);
+      if (fire > 0.24) return;
+      const buyP = Math.max(0.12, Math.min(0.88, 0.5 + bot.bias * 0.28 + climate * 0.035));
+      const dir = hashUnit(`${asset.id}|${bot.id}|${bucket}|dir`) < buyP ? 1 : -1;
+      qty += dir * (1 + Math.floor(hashUnit(`${asset.id}|${bot.id}|${bucket}|qty`) * 3));
+    });
+    return qty;
+  }
+
+  function quotePrice(asset) {
+    if (!asset) return 0;
+    let price = Number(asset.price) || 0;
+    const climate = climateTone();
+    if (isSchoolListing(asset)) {
+      price *= (1 + climate * 0.007);
+      price *= (1 + Math.max(-0.055, Math.min(0.055, flowImpact(asset, botFlowFor(asset)))));
+    } else {
+      price *= (1 + climate * 0.003);
+    }
+    return Math.max(5, round1(price));
+  }
+
   function applyFlow(asset, signedQty) {
     asset.weekFlow = (asset.weekFlow || 0) + signedQty;
     if (!isSchoolListing(asset)) return;
@@ -2342,7 +2421,9 @@
     const unit = hashUnit(`${asset.id}:${sec}`) * 2 - 1;
     const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
     const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.65 : 1);
-    const wiggle = flow * 0.01 + unit * noise * 0.055;
+    const climate = climateTone() * (isSchoolListing(asset) ? 0.0011 : 0.0005);
+    const bots = isSchoolListing(asset) ? Math.max(-0.012, Math.min(0.012, flowImpact(asset, botFlowFor(asset)) * 0.4)) : 0;
+    const wiggle = flow * 0.01 + unit * noise * 0.055 + climate + bots;
     return Math.max(5, round1(asset.price * (1 + Math.max(-0.018, Math.min(0.018, wiggle)))));
   }
 
@@ -2400,7 +2481,7 @@
   }
 
   function flowHint(asset) {
-    const flow = asset.weekFlow || asset.lastFlow || 0;
+    const flow = (asset.weekFlow || asset.lastFlow || 0) + (isSchoolListing(asset) ? botFlowFor(asset) : 0);
     if (flow > 2) return { text: "매수세", type: "up" };
     if (flow < -2) return { text: "매도세", type: "down" };
     return { text: "보합 수급", type: "flat" };
@@ -2520,7 +2601,7 @@
     const localAsset = assetById(assetId);
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
-    if (side === "buy" && localAsset.price * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (side === "buy" && Math.max(quotePrice(localAsset), Number(localAsset.price) || 0) * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
     if (worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
 
@@ -2531,15 +2612,16 @@
 
       const asset = assetById(assetId);
       Object.assign(asset, result.asset);
-      pushTick(asset, asset.price);
+      pushTick(asset, quotePrice(asset));
       const holding = ensureHolding(state.holdings, assetId);
-      const total = round1(result.fillPrice * qty);
+      const fillPrice = isSchoolListing(asset) ? quotePrice(asset) : result.fillPrice;
+      const total = round1(fillPrice * qty);
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
         state.cash = round1(state.cash - total);
       } else {
-        if (result.fillPrice > holding.avg) state.profitableSales += 1;
+        if (fillPrice > holding.avg) state.profitableSales += 1;
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
         if (holding.qty === 0) holding.avg = 0;
@@ -2550,7 +2632,7 @@
       return {
         ok: true,
         assetName: asset.name,
-        fillPrice: result.fillPrice,
+        fillPrice,
         total,
         holdingQty: holding.qty,
         cash: state.cash,
@@ -3059,7 +3141,9 @@
 
   function scheduleBots() {}
 
-  function botTick() {}
+  function botTick() {
+    /* price bots stay off the ranking and never found companies; they only tilt school quotes */
+  }
 
   function stopWorldSync() {
     unsubscribeWorld();
@@ -3948,6 +4032,7 @@
       const newsChange = state.changes[asset.id] || 0;
       const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400) * (asset.playerCompany ? 0.2 : 0.3);
       let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange + flow;
+      extra += climateTone() * (asset.playerCompany ? 0.003 : 0.008);
       if (!asset.playerCompany && Math.abs(extra) < 0.003) {
         extra = (extra >= 0 ? 1 : -1) * (0.004 + random() * 0.01);
       }
@@ -4081,6 +4166,7 @@
     subscribeWorld();
     subscribeBans();
     subscribeHalt();
+    subscribeClimate();
     startPresence();
     worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
     worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
@@ -4130,6 +4216,7 @@
       }
       await fetchBans();
       await fetchHalt();
+      await fetchClimate();
       if (isBanned(session.id)) {
         if (els.lobbyStatus) els.lobbyStatus.textContent = "이 계좌는 강퇴되어 시장에 들어갈 수 없습니다.";
         toast("🚫", "입장 거부", "강퇴된 아이디입니다. 다른 계좌를 만드세요.");
@@ -4924,7 +5011,7 @@
   function totalAssets() {
     const stocks = state.assets.reduce((sum, asset) => {
       const holding = ensureHolding(state.holdings, asset.id);
-      return sum + asset.price * holding.qty;
+      return sum + quotePrice(asset) * holding.qty;
     }, 0);
     return round1(state.cash + stocks + lendingNetFor(state.playerId));
   }
@@ -4932,7 +5019,7 @@
   function holdingsValue() {
     return state.assets.reduce((sum, asset) => {
       const holding = ensureHolding(state.holdings, asset.id);
-      return sum + asset.price * holding.qty;
+      return sum + quotePrice(asset) * holding.qty;
     }, 0);
   }
 
@@ -5090,10 +5177,10 @@
   function assetRowMarkup(asset, qtyValue) {
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
-    const maxBuy = Math.floor(state.cash / asset.price);
+    const maxBuy = Math.floor(state.cash / Math.max(1, quotePrice(asset)));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? (quotePrice(asset) - holding.avg) * holding.qty : 0;
     const flow = flowHint(asset);
     const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
     const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
@@ -5111,7 +5198,7 @@
           <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
         </div>
         <div class="asset-price">
-          <strong class="asset-last">${money(asset.price)}</strong>
+          <strong class="asset-last">${money(quotePrice(asset))}</strong>
           ${sparkSvg(asset, SPARK_W, SPARK_H)}
           <span class="asset-change ${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개</span>
           <span class="flow-pill ${flow.type}">${flow.text}</span>
@@ -5145,13 +5232,13 @@
     if (!row || !asset) return;
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
-    const maxBuy = Math.floor(state.cash / asset.price);
+    const maxBuy = Math.floor(state.cash / Math.max(1, quotePrice(asset)));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? (asset.price - holding.avg) * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? (quotePrice(asset) - holding.avg) * holding.qty : 0;
     const flow = flowHint(asset);
     const last = row.querySelector(".asset-last");
-    if (last) last.textContent = money(asset.price);
+    if (last) last.textContent = money(quotePrice(asset));
     const change = row.querySelector(".asset-change");
     if (change) {
       change.className = `asset-change ${changeType}`;
@@ -5285,7 +5372,7 @@
       const svg = row.querySelector(".asset-spark");
       if (svg) svg.setAttribute("class", `asset-spark ${tone}`);
       const last = row.querySelector(".asset-last");
-      if (last) last.textContent = money(asset.price);
+      if (last) last.textContent = money(quotePrice(asset));
     });
     const list = ensureLiveChartSelection();
     const asset = list.find((item) => item.id === selectedChartId) || list[0];
@@ -5310,7 +5397,7 @@
       els.liveChartMeta.textContent = `학교 기업 · ${asset.founderName || "창업"} · 최근 ${percent(change)}`;
     }
     if (els.liveChartPrice) {
-      els.liveChartPrice.textContent = money(asset.price);
+      els.liveChartPrice.textContent = money(quotePrice(asset));
       els.liveChartPrice.className = tickToneClass(values);
     }
   }
@@ -5327,7 +5414,7 @@
     const segments = [];
     const legend = [];
     held.forEach((asset) => {
-      const value = asset.price * state.holdings[asset.id].qty;
+      const value = quotePrice(asset) * state.holdings[asset.id].qty;
       const share = total > 0 ? value / total * 100 : 0;
       segments.push(`${safeColor(asset.color)} ${cursor}% ${cursor + share}%`);
       cursor += share;
@@ -5345,7 +5432,7 @@
 
     let weightedRisk = 0;
     held.forEach((asset) => {
-      weightedRisk += asset.risk * (asset.price * state.holdings[asset.id].qty / Math.max(1, invested));
+      weightedRisk += asset.risk * (quotePrice(asset) * state.holdings[asset.id].qty / Math.max(1, invested));
     });
     const riskPercent = invested > 0 ? weightedRisk / 5 * 100 * ratio : 0;
     const riskText = riskPercent > 70 ? "매우 높음" : riskPercent > 48 ? "높음" : riskPercent > 25 ? "보통" : "안전";
@@ -6549,4 +6636,6 @@
   fetchBans().then(() => loadPublicRanking());
   fetchHalt();
   subscribeHalt();
+  fetchClimate();
+  subscribeClimate();
 })();

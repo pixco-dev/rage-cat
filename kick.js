@@ -4,6 +4,7 @@
   const WORLD_PATH = "bull-lab/world";
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
+  const CLIMATE_PATH = "bull-lab/climate";
   const PRESENCE_PATH = "bull-lab/presence";
   const WEALTH_SANITY = 50000;
   const DEFAULT_FIREBASE_CONFIG = {
@@ -23,8 +24,13 @@
   const haltBox = document.querySelector("#kick-halt");
   const haltCopy = document.querySelector("#halt-copy");
   const haltToggle = document.querySelector("#halt-toggle");
+  const climateTone = document.querySelector("#climate-tone");
+  const climateCopy = document.querySelector("#climate-copy");
+  const climateForm = document.querySelector("#climate-form");
+  const climateSave = document.querySelector("#climate-save");
   const toastStack = document.querySelector("#toast-stack");
   let haltStopped = false;
+  let climateValue = 0;
 
   function firebaseConfig() {
     const cfg = window.FIREBASE_CONFIG || DEFAULT_FIREBASE_CONFIG;
@@ -104,16 +110,18 @@
   async function loadDesk() {
     statusEl.textContent = "불러오는 중…";
     try {
-      const [playersRes, bansRes, assetsRes, haltRes] = await Promise.all([
+      const [playersRes, bansRes, assetsRes, haltRes, climateRes] = await Promise.all([
         rest(`${WORLD_PATH}/players`),
         rest(BAN_PATH),
         rest(`${WORLD_PATH}/assets`),
         rest(HALT_PATH),
+        rest(CLIMATE_PATH),
       ]);
       const players = listFromMap(await playersRes.json());
       const bans = listFromMap(await bansRes.json());
       const assets = listFromMap(await assetsRes.json());
       applyHalt(await haltRes.json());
+      applyClimate(await climateRes.json());
       const banIds = new Set(bans.map((row) => row.id));
       const ranked = players
         .filter((player) => player.id && !String(player.id).startsWith("bot-") && !String(player.id).startsWith("guest-"))
@@ -154,7 +162,7 @@
           </li>`).join("");
       }
 
-      statusEl.textContent = `${haltStopped ? "정지됨" : "운영 중"} · 시장 ${ranked.length}명 · 강퇴 ${bans.length}명`;
+      statusEl.textContent = `${haltStopped ? "정지됨" : "운영 중"} · 장세 ${climateValue} · 시장 ${ranked.length}명 · 강퇴 ${bans.length}명`;
     } catch {
       statusEl.textContent = "공유 시장에 닿지 못했습니다.";
       toast("연결 실패", "잠시 후 다시 불러와 주세요.");
@@ -170,6 +178,46 @@
     if (haltToggle) {
       haltToggle.textContent = haltStopped ? "서버 재개" : "서버 정지";
       haltToggle.className = haltStopped ? "unkick-button" : "kick-button";
+    }
+  }
+
+  function climateLabel(tone) {
+    if (tone <= -7) return "강한 하락장";
+    if (tone <= -3) return "하락장";
+    if (tone >= 7) return "강한 상승장";
+    if (tone >= 3) return "상승장";
+    return "보통";
+  }
+
+  function applyClimate(value) {
+    const tone = Number(value && typeof value === "object" ? value.tone : value);
+    climateValue = Number.isFinite(tone) ? Math.max(-10, Math.min(10, Math.round(tone))) : 0;
+    if (climateTone && document.activeElement !== climateTone) climateTone.value = String(climateValue);
+    if (climateCopy) {
+      climateCopy.textContent = `지금 ${climateLabel(climateValue)} (${climateValue}). 0은 보통, 플러스는 상승장, 마이너스는 하락장입니다. 학생 회사 주가는 바로 움직이고, 기본 종목은 다음 주가 공개 때 더 반영됩니다.`;
+    }
+  }
+
+  async function saveClimate(event) {
+    event.preventDefault();
+    const tone = Math.max(-10, Math.min(10, Math.round(Number(climateTone?.value) || 0)));
+    if (climateSave) climateSave.disabled = true;
+    try {
+      await rest(CLIMATE_PATH, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tone,
+          at: Date.now(),
+          by: "kick-desk",
+        }),
+      });
+      applyClimate({ tone });
+      toast("장세", `${climateLabel(tone)} (${tone})로 바꿨습니다.`);
+    } catch {
+      toast("실패", "장세를 저장하지 못했습니다.");
+    } finally {
+      if (climateSave) climateSave.disabled = false;
     }
   }
 
@@ -248,6 +296,7 @@
   haltToggle?.addEventListener("click", () => {
     toggleHalt();
   });
+  climateForm?.addEventListener("submit", saveClimate);
 
   playersEl?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-kick]");
