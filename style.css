@@ -3131,3 +3131,91 @@ body.modal-open {
   color: var(--muted);
   font-size: 12px;
 }
+
+.halt-screen[hidden] {
+  display: none !important;
+}
+
+.halt-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--white);
+  background:
+    linear-gradient(rgba(14, 25, 21, .12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(14, 25, 21, .12) 1px, transparent 1px),
+    #0b1411;
+  background-size: 32px 32px, 32px 32px, auto;
+}
+
+body.is-halted {
+  overflow: hidden;
+}
+
+.halt-card {
+  width: min(560px, 100%);
+  padding: clamp(28px, 5vw, 48px);
+  text-align: center;
+  background: var(--white);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  box-shadow: 12px 12px 0 var(--red);
+}
+
+.halt-kicker {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--red);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .16em;
+}
+
+.halt-brand {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.halt-card h1 {
+  margin: 0 0 16px;
+  font-family: "Song Myung", serif;
+  font-size: clamp(32px, 6vw, 44px);
+  line-height: 1.25;
+  font-weight: 400;
+}
+
+.halt-card p#halt-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.halt-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 28px;
+  padding: 10px 16px;
+  color: var(--ink);
+  background: #fff0ed;
+  border: 1px solid rgba(239, 91, 63, .35);
+  font-size: 13px;
+}
+
+.halt-wait i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: halt-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes halt-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.7); }
+}

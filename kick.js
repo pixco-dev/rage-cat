@@ -173,7 +173,7 @@
     haltStopped = !!(value && typeof value === "object" && value.stopped === true);
     haltBox?.classList.toggle("is-stopped", haltStopped);
     if (haltCopy) haltCopy.textContent = haltStopped
-      ? "정지됨. 학생은 시장에 들어갈 수 없습니다."
+      ? "정지됨. 학생 화면에는 서버가 잠시 멈췄다는 안내만 보입니다."
       : "운영 중. 학생들이 지금 거래할 수 있습니다.";
     if (haltToggle) {
       haltToggle.textContent = haltStopped ? "서버 재개" : "서버 정지";

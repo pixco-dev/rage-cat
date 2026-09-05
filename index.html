@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Mono:wght@400;600&family=Song+Myung&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260904q">
+  <link rel="stylesheet" href="style.css?v=20260904r">
 </head>
 <body>
   <header class="site-header">
@@ -527,9 +527,31 @@
   </div>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <div class="halt-screen" id="halt-screen" hidden>
+    <section class="halt-card" role="alertdialog" aria-modal="true" aria-labelledby="halt-title" aria-describedby="halt-lead">
+      <span class="halt-kicker">MARKET HALTED</span>
+      <p class="halt-brand">불장연구소</p>
+      <h1 id="halt-title">서버가 잠시 멈췄습니다</h1>
+      <p id="halt-lead">관리자가 공유 시장을 정지했습니다. 지금은 거래 화면이 열리지 않습니다.<br>보유 자산은 그대로 유지됩니다. 재개되면 이 안내가 사라집니다.</p>
+      <div class="halt-wait" aria-hidden="true">
+        <i></i>
+        <span>재개 대기 중</span>
+      </div>
+    </section>
+  </div>
+  <script>
+    (function () {
+      try {
+        if (!new URLSearchParams(location.search).has("halt-preview")) return;
+        var screen = document.getElementById("halt-screen");
+        if (screen) screen.hidden = false;
+        document.body.classList.add("is-halted");
+      } catch (err) { /* ignore */ }
+    })();
+  </script>
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260904q"></script>
+  <script src="game.js?v=20260904r"></script>
 </body>
 </html>

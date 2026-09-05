@@ -663,6 +663,7 @@
     bestRecord: $("#best-record"),
     sound: $("#sound-button"),
     toastStack: $("#toast-stack"),
+    haltScreen: $("#halt-screen"),
     accountButton: $("#account-button"),
     authModal: $("#auth-modal"),
     authForm: $("#auth-form"),
@@ -1042,23 +1043,52 @@
     return !!serverStopped;
   }
 
+  function haltPreviewRequested() {
+    try {
+      return new URLSearchParams(location.search).has("halt-preview");
+    } catch {
+      return false;
+    }
+  }
+
   function applyHalt(value) {
+    if (haltPreviewRequested()) {
+      serverStopped = true;
+      showHaltedScreen();
+      return;
+    }
     const stopped = !!(value && typeof value === "object" && value.stopped === true);
     const was = serverStopped;
     serverStopped = stopped;
-    if (stopped) ejectHalted();
-    else if (was) toast("📈", "서버 재개", "시장이 다시 열렸습니다. 투자 시작하기를 눌러 입장하세요.");
+    if (stopped) showHaltedScreen();
+    else if (was) {
+      hideHaltedScreen();
+      toast("📈", "서버 재개", "시장이 다시 열렸습니다. 투자 시작하기를 눌러 입장하세요.");
+    }
+  }
+
+  function showHaltedScreen() {
+    if (els.haltScreen) els.haltScreen.hidden = false;
+    document.body.classList.add("is-halted");
+    try { freezeHaltedSession(); } catch { /* keep overlay visible */ }
+  }
+
+  function hideHaltedScreen() {
+    if (els.haltScreen) els.haltScreen.hidden = true;
+    document.body.classList.remove("is-halted");
+  }
+
+  function freezeHaltedSession() {
+    worldSync.inMarket = false;
+    if (state) state.active = false;
+    hideDesk();
+    stopWorldSync();
+    allModals().forEach(closeModal);
   }
 
   function ejectHalted() {
     if (!isServerStopped()) return;
-    if (state?.active || worldSync.inMarket) {
-      worldSync.inMarket = false;
-      if (state) state.active = false;
-      hideDesk();
-      stopWorldSync();
-      toast("⛔", "서버 정지", "교사가 공유 시장을 멈췄습니다. 지금은 거래할 수 없습니다.");
-    }
+    showHaltedScreen();
   }
 
   async function fetchHalt() {
@@ -4223,8 +4253,7 @@
         return;
       }
       if (isServerStopped()) {
-        if (els.lobbyStatus) els.lobbyStatus.textContent = "서버가 정지되어 있습니다. 교사가 다시 열 때까지 기다리세요.";
-        toast("⛔", "서버 정지", "지금은 공유 시장에 들어갈 수 없습니다.");
+        showHaltedScreen();
         return;
       }
       if (worldSync.inMarket && state?.active) {
@@ -6306,6 +6335,10 @@
   }
 
   function openSetupFlow() {
+    if (isServerStopped()) {
+      showHaltedScreen();
+      return;
+    }
     if (worldSync.inMarket && state?.active) {
       closeModal(els.setupModal);
       closeModal(els.lobbyModal);
@@ -6318,6 +6351,10 @@
   }
 
   function startGame() {
+    if (isServerStopped()) {
+      showHaltedScreen();
+      return;
+    }
     if (!requireSession()) return;
     closeModal(els.setupModal);
     closeModal(els.lobbyModal);
@@ -6638,4 +6675,5 @@
   subscribeHalt();
   fetchClimate();
   subscribeClimate();
+  if (haltPreviewRequested()) applyHalt({ stopped: true });
 })();
