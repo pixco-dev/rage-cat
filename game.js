@@ -72,6 +72,7 @@
   const SPARK_H = 36;
 
   const PERIODS = [
+    { n: 0, h: 8, m: 20, label: "장전" },
     { n: 1, h: 9, m: 20, label: "1교시" },
     { n: 2, h: 10, m: 20, label: "2교시" },
     { n: 3, h: 11, m: 20, label: "3교시" },
@@ -80,6 +81,8 @@
     { n: 6, h: 15, m: 0, label: "6교시" },
     { n: 7, h: 16, m: 0, label: "7교시" },
   ];
+  const FIRST_PERIOD_N = PERIODS[0].n;
+  const LAST_PERIOD_N = PERIODS[PERIODS.length - 1].n;
 
   const MODES = {
     rookie: { name: "연습생 모드", cash: 800, goal: 1800, research: 2, energy: 4 },
@@ -4416,14 +4419,14 @@
       });
       if (last) return last;
     }
-    return periodId(previousSchoolYmd(parts.ymd), 7);
+    return periodId(previousSchoolYmd(parts.ymd), LAST_PERIOD_N);
   }
 
   function nextPeriodAfter(id) {
     const parsed = parsePeriodId(id);
-    if (!parsed) return periodId(parseKstParts(kstNowMs()).ymd, 1);
-    if (parsed.n < 7) return periodId(parsed.ymd, parsed.n + 1);
-    return periodId(nextSchoolYmd(parsed.ymd), 1);
+    if (!parsed) return periodId(parseKstParts(kstNowMs()).ymd, FIRST_PERIOD_N);
+    if (parsed.n < LAST_PERIOD_N) return periodId(parsed.ymd, parsed.n + 1);
+    return periodId(nextSchoolYmd(parsed.ymd), FIRST_PERIOD_N);
   }
 
   function duePeriodId(lastSettled, parts) {
