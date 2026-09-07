@@ -3331,8 +3331,9 @@
       const weekKey = activityWeekKey();
       const sameWeek = previous?.activityWeek === weekKey;
       const storedEnergy = Number(previous?.energy);
-      if (sameWeek && Number.isFinite(storedEnergy) && !options.allowEnergyIncrease) {
-        state.energy = Math.min(state.energy, Math.max(0, Math.min(state.energyMax, Math.floor(storedEnergy))));
+      if (sameWeek && Number.isFinite(storedEnergy)) {
+        const allowedEnergy = Math.floor(storedEnergy) + (options.allowEnergyIncrease ? 1 : 0);
+        state.energy = Math.min(state.energy, Math.max(0, Math.min(state.energyMax, allowedEnergy)));
       }
       if (sameWeek) {
         state.jobsDone = new Set([...(previous.jobsDone || []), ...(state.jobsDone || [])]);
@@ -3342,9 +3343,12 @@
       const weekJobIds = sameWeek && Array.isArray(previous.weekJobIds) && previous.weekJobIds.length
         ? previous.weekJobIds
         : (state.weekJobs || []).map((item) => item.id);
-      const weekPlayIds = sameWeek && Array.isArray(previous.weekPlayIds) && previous.weekPlayIds.length
-        ? previous.weekPlayIds
-        : (state.weekPlays || []).map((item) => item.id);
+      const currentWeekPlayIds = (state.weekPlays || []).map((item) => item.id);
+      const previousWeekPlayIds = Array.isArray(previous?.weekPlayIds) ? previous.weekPlayIds : [];
+      const recoveryCount = (ids) => ids.filter((id) => PLAYS.find((item) => item.id === id)?.reward === "energy").length;
+      const weekPlayIds = sameWeek && previousWeekPlayIds.length && recoveryCount(previousWeekPlayIds) >= recoveryCount(currentWeekPlayIds)
+        ? previousWeekPlayIds
+        : currentWeekPlayIds;
       all[session.id] = {
         cash: state.cash,
         holdings: cloneHoldings(state.holdings),
@@ -6090,10 +6094,11 @@
       state.weekPlays = row.weekPlayIds.map((id) => playsById[id]).filter(Boolean);
     }
     if (state.weekPlays.length) {
-      const recharge = state.weekPlays.find((item) => item.reward === "energy") || playsById.recharge;
-      if (recharge) {
-        state.weekPlays = [recharge, ...state.weekPlays.filter((item) => item.reward !== "energy").slice(0, 4)];
-      }
+      const recharge = state.weekPlays.filter((item) => item.reward === "energy").slice(0, 2);
+      PLAYS.filter((item) => item.reward === "energy" && !recharge.some((entry) => entry.id === item.id))
+        .slice(0, 2 - recharge.length)
+        .forEach((item) => recharge.push(item));
+      state.weekPlays = [...recharge, ...state.weekPlays.filter((item) => item.reward !== "energy").slice(0, 3)];
     }
     if (typeof row.adDone === "boolean") state.adDone = row.adDone;
     if (Array.isArray(row.analyzed)) state.analyzed = new Set(row.analyzed);
@@ -6102,9 +6107,9 @@
   }
 
   function pickWeeklyPlays() {
-    const recharge = shuffled(PLAYS.filter((item) => item.reward === "energy"))[0];
+    const recharge = shuffled(PLAYS.filter((item) => item.reward === "energy")).slice(0, 2);
     const others = shuffled(PLAYS.filter((item) => item.reward !== "energy"));
-    return recharge ? [recharge, ...others.slice(0, 4)] : others.slice(0, 5);
+    return [...recharge, ...others.slice(0, 3)];
   }
 
   function resetLocalWeek() {
