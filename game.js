@@ -2,9 +2,9 @@
   "use strict";
 
   const MAX_WEEKS = 12;
-  const AUTH_STORE = "bull-lab-accounts-v1";
-  const SESSION_STORE = "bull-lab-session-v1";
-  const WALLET_STORE = "bull-lab-wallets-v1";
+  const AUTH_STORE = "bull-lab-accounts-v2";
+  const SESSION_STORE = "bull-lab-session-v2";
+  const WALLET_STORE = "bull-lab-wallets-v2";
   const AD_COST = 18;
   const MIN_SEED = 80;
   const MIN_LEND_SEED = 40;
@@ -18,15 +18,15 @@
   const HALT_PATH = "bull-lab/halt";
   const CLIMATE_PATH = "bull-lab/climate";
   const GAMBLE_PATH = "bull-lab/gamble/tables";
-  const GAMBLE_SETTLE_STORE = "bull-lab-gamble-settled-v1";
+  const GAMBLE_SETTLE_STORE = "bull-lab-gamble-settled-v2";
   const MIN_GAMBLE_STAKE = 10;
   const GAMBLE_MAX_SEATS = 5;
   const LOTTERY_PATH = "bull-lab/lottery/current";
-  const LOTTERY_CLAIM_STORE = "bull-lab-lottery-claim-v1";
+  const LOTTERY_CLAIM_STORE = "bull-lab-lottery-claim-v2";
   const LOTTERY_BASE_POT = 500;
   const LOTTERY_TICKET_PRICE = 100;
   const LOTTERY_MAX_TICKETS = 2;
-  const PROMO_DESK_STORE = "bull-lab-promo-desk-v1";
+  const PROMO_DESK_STORE = "bull-lab-promo-desk-v2";
   const AI_TRADER_COUNT = 500;
   const AI_QUOTE_BUCKET_MS = 20000;
   const TRADE_FEE_RATE = .005;
@@ -37,8 +37,8 @@
     { id: "contrarian", share: .17, bias: 0, momentum: -.8, value: .5, news: -.1, risk: .02 },
     { id: "defensive", share: .13, bias: -.02, momentum: .1, value: .2, news: .25, risk: -.7 },
   ];
-  const DEVICE_STORE = "bull-lab-device-v1";
-  const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v1";
+  const DEVICE_STORE = "bull-lab-device-v2";
+  const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v2";
   const DEVICE_PATH = "bull-lab/devices";
   const ACCOUNT_PATH = "bull-lab/accounts";
   const MAX_DEVICE_ACCOUNTS = 2;
@@ -144,7 +144,7 @@
   ];
 
   const PLAYER_COLORS = ["#c45c26", "#2a6f7f", "#8b3d62", "#4a6b2f", "#6b4ea1", "#b33b3b"];
-  const LOCAL_WORLD_KEY = "bull-lab-shared-world-v2";
+  const LOCAL_WORLD_KEY = "bull-lab-shared-world-v3";
   const KST_ENDPOINTS = [
     "https://worldtimeapi.org/api/timezone/Asia/Seoul",
     "https://timeapi.io/api/Time/current/zone?timeZone=Asia/Seoul",
@@ -830,7 +830,7 @@
   let activeChatRoomId = "";
   let selectedChartId = "";
   const clientId = (() => {
-    const key = "bull-lab-client-v1";
+    const key = "bull-lab-client-v2";
     try {
       let value = sessionStorage.getItem(key);
       if (!value) {
@@ -7759,7 +7759,7 @@
 
   function readBest() {
     try {
-      return Number(localStorage.getItem("bull-lab-best") || 0);
+      return Number(localStorage.getItem("bull-lab-best-v2") || 0);
     } catch {
       return 0;
     }
@@ -7768,7 +7768,7 @@
   function saveBest(rate) {
     const best = Math.max(readBest(), rate);
     try {
-      localStorage.setItem("bull-lab-best", String(best));
+      localStorage.setItem("bull-lab-best-v2", String(best));
     } catch {
       // Storage is optional.
     }
