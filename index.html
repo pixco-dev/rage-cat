@@ -244,7 +244,7 @@
           <div class="market-close">
             <div>
               <span>교시가 끝나면 주가가 공개됩니다</span>
-              <p id="close-market-hint">기본 종목은 교시가 끝나면 정산됩니다. 모든 주문에는 0.5% 거래비용, 이익 매도에는 자산 규모별 0~18% 양도세가 붙고 4주마다 누진 자산세가 정산됩니다.</p>
+              <p id="close-market-hint">기본 종목은 교시가 끝나면 정산됩니다. 모든 주문에는 0.5% 거래비용이 붙습니다. 학생 회사는 매수·매도 가격차와 10분 이내 이익의 80% 단타세가 적용되며, 같은 기기의 부계 매수는 차단됩니다.</p>
             </div>
             <button class="ghost-button" id="close-market" type="button">강제 정산 (표준시가 안 맞을 때)</button>
           </div>
@@ -334,7 +334,7 @@
       <div class="guide-grid">
         <article><span>01</span><i>勞動</i><h3>알바로 시드를 모으세요</h3><p>매주 다른 알바와 미니게임이 뜹니다. 번 돈은 로그아웃해도 계좌에 남습니다.</p></article>
         <article><span>02</span><i>廣告</i><h3>광고는 힌트일 뿐입니다</h3><p>창업자가 돈을 들여 메시지를 냅니다. 관심은 모이지만, 허풍은 신뢰와 주가를 함께 깎습니다.</p></article>
-        <article><span>03</span><i>需給</i><h3>사고팔면 가격이 움직입니다</h3><p>6개 기본 종목은 뉴스와 수급으로 움직입니다. 학생 회사는 그 위에 상장되고, 실제 매수·매도가 가격을 밀고 누릅니다.</p></article>
+        <article><span>03</span><i>需給</i><h3>수급과 실적이 가격을 만듭니다</h3><p>6개 기본 종목은 뉴스와 수급으로 움직입니다. 학생 회사는 실적·광고·시장 수급으로 움직이며, 부계 펌핑과 즉시 차익은 제한됩니다.</p></article>
         <article><span>04</span><i>忍耐</i><h3>시즌은 반복됩니다</h3><p>12주가 끝나도 회사와 보유 자산은 남습니다. 현금도 포지션입니다.</p></article>
       </div>
     </section>
@@ -628,6 +628,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260907auth1"></script>
+  <script src="game.js?v=20260907antialt1"></script>
 </body>
 </html>

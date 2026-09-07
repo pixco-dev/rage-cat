@@ -35,7 +35,10 @@
   const AI_QUOTE_BUCKET_MS = 20000;
   const TRADE_FEE_RATE = .005;
   const CORE_POSITION_LIMIT_RATE = .25;
-  const COMPANY_POSITION_LIMIT_RATE = .3;
+  const COMPANY_POSITION_LIMIT_RATE = .15;
+  const COMPANY_SPREAD_RATE = .025;
+  const COMPANY_QUICK_FLIP_MS = 10 * 60 * 1000;
+  const COMPANY_QUICK_FLIP_TAX_RATE = .8;
   const MAX_STORED_QTY = 10000;
   const AI_TRADER_ARCHETYPES = [
     { id: "momentum", share: .28, bias: .01, momentum: .9, value: -.1, news: .45, risk: .05 },
@@ -3311,6 +3314,7 @@
         writeSession({ id, nick: restored.nick || id });
       }
     }
+    rememberDeviceAccount(id);
     await fetchBans();
     if (isBanned(id)) {
       writeSession(null);
@@ -3367,9 +3371,11 @@
     Object.keys(holdings || {}).forEach((id) => {
       const rawQty = Number(holdings[id]?.qty);
       const rawAvg = Number(holdings[id]?.avg);
+      const rawBoughtAt = Number(holdings[id]?.boughtAt);
       const qty = Number.isFinite(rawQty) ? Math.min(MAX_STORED_QTY, Math.max(0, Math.floor(rawQty))) : 0;
       const avg = qty > 0 && Number.isFinite(rawAvg) ? Math.min(WEALTH_SANITY, Math.max(0, rawAvg)) : 0;
       out[id] = { qty, avg };
+      if (qty > 0 && Number.isFinite(rawBoughtAt) && rawBoughtAt > 0) out[id].boughtAt = rawBoughtAt;
     });
     return out;
   }
@@ -3600,7 +3606,9 @@
     const float = Math.max(40, asset.float || 400);
     const k = isSchoolListing(asset) ? 0.85 : 0.3;
     const signed = signedQty >= 0 ? 1 : -1;
-    const mag = Math.max(0.004, Math.min(0.1, Math.abs((signedQty / float) * k)));
+    const minImpact = isSchoolListing(asset) ? 0 : 0.004;
+    const maxImpact = isSchoolListing(asset) ? 0.035 : 0.1;
+    const mag = Math.max(minImpact, Math.min(maxImpact, Math.abs((signedQty / float) * k)));
     return signed * mag;
   }
 
@@ -3771,6 +3779,25 @@
     return round1(gross * multiplier);
   }
 
+  function tradeFillPrice(asset, side) {
+    const quote = quotePrice(asset);
+    if (!isSchoolListing(asset)) return quote;
+    const spread = side === "buy" ? 1 + COMPANY_SPREAD_RATE : 1 - COMPANY_SPREAD_RATE;
+    return Math.max(5, round1(quote * spread));
+  }
+
+  function isRelatedAccountCompany(asset) {
+    if (!isSchoolListing(asset) || !asset?.founderId || asset.founderId === state?.playerId) return false;
+    return readDeviceAccountIds().includes(String(asset.founderId).toLowerCase());
+  }
+
+  function quickFlipTax(asset, holding, profit) {
+    if (!isSchoolListing(asset) || !(profit > 0)) return 0;
+    const boughtAt = Number(holding?.boughtAt) || 0;
+    if (!(boughtAt > 0) || Date.now() - boughtAt >= COMPANY_QUICK_FLIP_MS) return 0;
+    return round1(profit * COMPANY_QUICK_FLIP_TAX_RATE);
+  }
+
   function maxPositionQty(asset) {
     const rate = isSchoolListing(asset) ? COMPANY_POSITION_LIMIT_RATE : CORE_POSITION_LIMIT_RATE;
     return Math.max(1, Math.floor(Math.max(40, Number(asset?.float) || 400) * rate));
@@ -3873,15 +3900,14 @@
     if (actor.isLocal && Date.now() < (worldSync.tradeLockUntil || 0)) return { ok: false, err: "busy" };
     const holding = ensureHolding(actor.holdings, assetId);
     const signedQty = side === "buy" ? qty : -qty;
-    const px = isSchoolListing(asset)
-      ? Math.max(5, round1(asset.price * (1 + flowImpact(asset, signedQty))))
-      : asset.price;
+    const px = tradeFillPrice(asset, side);
     if (side === "buy") {
       if (holding.qty + qty > maxPositionQty(asset)) return { ok: false, err: "limit" };
       const cost = tradeTotal(px, qty, side);
       if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
       holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
       holding.qty += qty;
+      if (isSchoolListing(asset)) holding.boughtAt = Date.now();
       actor.cash = round1(actor.cash - cost);
       applyFlow(asset, qty);
       if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
@@ -3889,7 +3915,9 @@
       if (qty > holding.qty) return { ok: false, err: "qty" };
       const grossProceeds = tradeTotal(px, qty, side);
       const gainBeforeTax = round1(grossProceeds - holding.avg * qty);
-      const tax = actor.isLocal ? capitalGainsTax(gainBeforeTax) : 0;
+      const tax = actor.isLocal
+        ? round1(Math.min(Math.max(0, gainBeforeTax), capitalGainsTax(gainBeforeTax) + quickFlipTax(asset, holding, gainBeforeTax)))
+        : 0;
       const proceeds = round1(grossProceeds - tax);
       if (actor.isLocal && gainBeforeTax > 0) {
         state.profitableSales += 1;
@@ -3897,7 +3925,10 @@
       }
       holding.qty -= qty;
       actor.cash = round1(actor.cash + proceeds);
-      if (holding.qty === 0) holding.avg = 0;
+      if (holding.qty === 0) {
+        holding.avg = 0;
+        holding.boughtAt = 0;
+      }
       applyFlow(asset, -qty);
       if (actor.isLocal && !options.silent) recordTrade("sell", asset, qty, proceeds);
     }
@@ -3917,7 +3948,7 @@
     const signedQty = side === "buy" ? qty : -qty;
     // Settle at the visible quote. Order flow is accumulated for the weekly
     // market move instead of changing the quote before cash is credited.
-    const fillPrice = quotePrice(asset);
+    const fillPrice = tradeFillPrice(asset, side);
     asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
     asset.clientBuild = CLIENT_BUILD;
     return { asset, fillPrice };
@@ -3929,10 +3960,12 @@
       const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
       if (!read.ok) throw new Error(`firebase-rest-read-${read.status}`);
       const etag = read.headers.get("ETag");
-      const traded = nextTradedAsset(await read.json(), localAsset, side, qty);
+      const source = await read.json();
+      if (side === "buy" && isRelatedAccountCompany(source || localAsset)) return { ok: false, err: "related" };
+      const traded = nextTradedAsset(source, localAsset, side, qty);
       if (!traded) throw new Error("firebase-rest-invalid-asset");
       if (side === "buy" && tradeTotal(traded.fillPrice, qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
-      if (side === "buy" && ensureHolding(state.holdings, assetId).qty + qty > maxPositionQty(localAsset)) return { ok: false, err: "limit" };
+      if (side === "buy" && ensureHolding(state.holdings, assetId).qty + qty > maxPositionQty(traded.asset)) return { ok: false, err: "limit" };
       if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return { ok: false, err: "qty" };
       const headers = { "Content-Type": "application/json" };
       if (etag) headers["If-Match"] = etag;
@@ -3963,7 +3996,8 @@
     const localAsset = assetById(assetId);
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
-    if (side === "buy" && tradeTotal(Math.max(quotePrice(localAsset), Number(localAsset.price) || 0), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (side === "buy" && isRelatedAccountCompany(localAsset)) return { ok: false, err: "related" };
+    if (side === "buy" && tradeTotal(tradeFillPrice(localAsset, side), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
     if (side === "buy" && localHolding.qty + qty > maxPositionQty(localAsset)) return { ok: false, err: "limit" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
     if (worldSync.tradeBusy || worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
@@ -3982,20 +4016,26 @@
       let total = tradeTotal(fillPrice, qty, side);
       let realizedProfit = 0;
       let tax = 0;
+      let flipTax = 0;
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
+        if (isSchoolListing(asset)) holding.boughtAt = Date.now();
         state.cash = round1(state.cash - total);
       } else {
         const gainBeforeTax = round1(total - holding.avg * qty);
-        tax = capitalGainsTax(gainBeforeTax);
+        flipTax = quickFlipTax(asset, holding, gainBeforeTax);
+        tax = round1(Math.min(Math.max(0, gainBeforeTax), capitalGainsTax(gainBeforeTax) + flipTax));
         total = round1(total - tax);
         realizedProfit = round1(total - holding.avg * qty);
         if (gainBeforeTax > 0) state.profitableSales += 1;
         state.taxPaid = round1((state.taxPaid || 0) + tax);
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
-        if (holding.qty === 0) holding.avg = 0;
+        if (holding.qty === 0) {
+          holding.avg = 0;
+          holding.boughtAt = 0;
+        }
       }
       worldSync.online = true;
       recordTrade(side, asset, qty, total);
@@ -4009,6 +4049,7 @@
         cash: state.cash,
         realizedProfit,
         tax,
+        quickFlipTax: flipTax,
       };
     } catch {
       noteWorldError();
@@ -6781,10 +6822,11 @@
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
     const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
-    const maxBuy = Math.min(positionRoom, Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE))));
+    const related = isRelatedAccountCompany(asset);
+    const maxBuy = related ? 0 : Math.min(positionRoom, Math.floor(state.cash / Math.max(1, tradeFillPrice(asset, "buy") * (1 + TRADE_FEE_RATE))));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell"), holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
     const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
@@ -6824,7 +6866,7 @@
             <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
           </div>
           <div class="trade-actions">
-            <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""} ${maxBuy < 1 ? `title="현금 또는 종목별 보유 한도를 확인하세요"` : ""}>매수</button>
+            <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""} ${maxBuy < 1 ? `title="${related ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다" : "현금 또는 종목별 보유 한도를 확인하세요"}"` : ""}>매수</button>
             <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
           </div>
         </div>
@@ -6838,10 +6880,11 @@
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
     const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
-    const maxBuy = Math.min(positionRoom, Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE))));
+    const related = isRelatedAccountCompany(asset);
+    const maxBuy = related ? 0 : Math.min(positionRoom, Math.floor(state.cash / Math.max(1, tradeFillPrice(asset, "buy") * (1 + TRADE_FEE_RATE))));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell"), holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const last = row.querySelector(".asset-last");
     if (last) last.textContent = money(quote);
@@ -6879,7 +6922,7 @@
     if (buyBtn && buyBtn.getAttribute("aria-busy") !== "true") {
       buyBtn.disabled = disabled || maxBuy < 1;
       buyBtn.textContent = "매수";
-      if (maxBuy < 1) buyBtn.setAttribute("title", "현금 또는 종목별 보유 한도를 확인하세요");
+      if (maxBuy < 1) buyBtn.setAttribute("title", related ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다" : "현금 또는 종목별 보유 한도를 확인하세요");
       else buyBtn.removeAttribute("title");
     }
     const sellBtn = row.querySelector("[data-action='sell']");
@@ -7177,8 +7220,10 @@
           ? "같은 종목의 이전 주문을 처리하고 있습니다."
           : result.err === "cash"
             ? "현금이 부족합니다. 수량을 줄여 주세요."
+            : result.err === "related"
+              ? "같은 기기에서 사용한 다른 계정의 회사는 매수할 수 없습니다."
             : result.err === "limit"
-              ? "한 종목은 유통주식의 25%(학생 회사 30%)까지만 보유할 수 있습니다."
+              ? "한 종목은 유통주식의 25%(학생 회사 15%)까지만 보유할 수 있습니다."
             : "시장 입장 상태와 주문 수량을 확인하세요.";
       toast("⚠️", "매수 실패", message);
       tone(130, .12, "sawtooth");
@@ -7197,7 +7242,7 @@
     try {
       const result = await executeSharedTrade(id, "sell", qty);
       if (result.ok) {
-        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · 실수령 ${money(result.total)}${result.tax > 0 ? ` · 양도세 ${money(result.tax)}` : ""} · 실현손익 ${signedMoney(result.realizedProfit)} · 보유 ${result.holdingQty}주`);
+        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · 실수령 ${money(result.total)}${result.tax > 0 ? ` · 세금 ${money(result.tax)}` : ""}${result.quickFlipTax > 0 ? ` (단타세 ${money(result.quickFlipTax)})` : ""} · 실현손익 ${signedMoney(result.realizedProfit)} · 보유 ${result.holdingQty}주`);
         return;
       }
       const message = result.err === "network"
