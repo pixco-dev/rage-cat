@@ -13,7 +13,7 @@
   const MIN_LEND_RATE = 1;
   const MAX_LEND_RATE = 15;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
-  const CLIENT_BUILD = "20260907lag1";
+  const CLIENT_BUILD = "20260904d";
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
   const CLIMATE_PATH = "bull-lab/climate";
