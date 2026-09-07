@@ -343,7 +343,9 @@
   ];
 
   const PLAYS = [
-    { id: "recharge", name: "집중력 회복 시험", icon: "🔋", energy: 0, game: "memory", reward: "energy", copy: "빠르게 지나가는 6칸 순서를 전부 맞히면 에너지 1을 회복합니다. 이번 주 한 번만 도전할 수 있습니다." },
+    { id: "recharge", name: "집중력 기억 시험", icon: "🔋", energy: 0, game: "memory", reward: "energy", difficulty: "hard", passScore: 1, copy: "빠르게 지나가는 6칸 순서를 전부 맞히면 에너지 1을 회복합니다.", failCopy: "6칸을 전부 맞혀야 합니다." },
+    { id: "recharge-timing", name: "반응 속도 시험", icon: "⚡", energy: 0, game: "timing", reward: "energy", difficulty: "hard", passScore: .9, copy: "빠르게 움직이는 바늘을 좁은 초록 구간에 세 번 맞히세요.", failCopy: "세 번 모두 초록 구간의 중심에 가깝게 맞혀야 합니다." },
+    { id: "recharge-sort", name: "순간 정렬 시험", icon: "🧩", energy: 0, game: "sort", reward: "energy", difficulty: "hard", passScore: 1, copy: "숫자 7개를 실수 없이 작은 순서대로 누르세요.", failCopy: "숫자 7개를 한 번도 틀리지 않고 정렬해야 합니다." },
     { id: "type", name: "타이핑 질주", icon: "⌨️", energy: 1, game: "typing", reward: "cash", copy: "빠르고 정확하게 치면 용돈이 들어옵니다." },
     { id: "time", name: "타이밍 바", icon: "🎯", energy: 1, game: "timing", reward: "cash", copy: "바늘이 초록에 있을 때 클릭하세요." },
     { id: "memo", name: "기억 카드", icon: "🧠", energy: 1, game: "memory", reward: "research", copy: "순서를 맞히면 리서치 포인트를 얻습니다." },
@@ -3321,10 +3323,28 @@
     return readWallets()[id] || null;
   }
 
-  function writeWallet() {
+  function writeWallet(options = {}) {
     if (!session?.id || !state?.active) return;
     try {
       const all = readWallets();
+      const previous = all[session.id] || null;
+      const weekKey = activityWeekKey();
+      const sameWeek = previous?.activityWeek === weekKey;
+      const storedEnergy = Number(previous?.energy);
+      if (sameWeek && Number.isFinite(storedEnergy) && !options.allowEnergyIncrease) {
+        state.energy = Math.min(state.energy, Math.max(0, Math.min(state.energyMax, Math.floor(storedEnergy))));
+      }
+      if (sameWeek) {
+        state.jobsDone = new Set([...(previous.jobsDone || []), ...(state.jobsDone || [])]);
+        state.intelDone = new Set([...(previous.intelDone || []), ...(state.intelDone || [])]);
+        state.playDone = new Set([...(previous.playDone || []), ...(state.playDone || [])]);
+      }
+      const weekJobIds = sameWeek && Array.isArray(previous.weekJobIds) && previous.weekJobIds.length
+        ? previous.weekJobIds
+        : (state.weekJobs || []).map((item) => item.id);
+      const weekPlayIds = sameWeek && Array.isArray(previous.weekPlayIds) && previous.weekPlayIds.length
+        ? previous.weekPlayIds
+        : (state.weekPlays || []).map((item) => item.id);
       all[session.id] = {
         cash: state.cash,
         holdings: cloneHoldings(state.holdings),
@@ -3346,15 +3366,15 @@
         playCount: state.playCount,
         profitableSales: state.profitableSales,
         cashSafeWeeks: state.cashSafeWeeks,
-        activityWeek: activityWeekKey(),
+        activityWeek: weekKey,
         week: state.week,
         season: state.season,
         jobsDone: [...(state.jobsDone || [])],
         intelDone: [...(state.intelDone || [])],
         playDone: [...(state.playDone || [])],
-        weekJobIds: (state.weekJobs || []).map((item) => item.id),
-        weekPlayIds: (state.weekPlays || []).map((item) => item.id),
-        adDone: !!state.adDone,
+        weekJobIds,
+        weekPlayIds,
+        adDone: sameWeek ? !!(previous.adDone || state.adDone) : !!state.adDone,
         analyzed: [...(state.analyzed || [])],
         intel: state.intel && typeof state.intel === "object" ? state.intel : {},
         updatedAt: Date.now(),
@@ -5561,8 +5581,8 @@
     window.removeEventListener("focus", onWorldFocus);
   }
 
-  function sendWallet() {
-    writeWallet();
+  function sendWallet(options = {}) {
+    writeWallet(options);
     if (state?.active) queuePush();
   }
 
@@ -6054,7 +6074,7 @@
   function applyWeekActivity(row) {
     if (!row || !state) return false;
     const key = row.activityWeek || (Number.isFinite(row.season) && Number.isFinite(row.week) ? `s${row.season}-w${row.week}` : "");
-    if (key && key !== activityWeekKey()) return false;
+    if (!key || key !== activityWeekKey()) return false;
     if (Number.isFinite(Number(row.energy))) {
       state.energy = Math.max(0, Math.min(state.energyMax, Math.floor(Number(row.energy))));
     }
@@ -6069,9 +6089,11 @@
     if (Array.isArray(row.weekPlayIds) && row.weekPlayIds.length) {
       state.weekPlays = row.weekPlayIds.map((id) => playsById[id]).filter(Boolean);
     }
-    const recharge = playsById.recharge;
-    if (recharge && !state.weekPlays.some((item) => item.id === recharge.id)) {
-      state.weekPlays = [recharge, ...state.weekPlays.filter((item) => item.id !== recharge.id).slice(0, 4)];
+    if (state.weekPlays.length) {
+      const recharge = state.weekPlays.find((item) => item.reward === "energy") || playsById.recharge;
+      if (recharge) {
+        state.weekPlays = [recharge, ...state.weekPlays.filter((item) => item.reward !== "energy").slice(0, 4)];
+      }
     }
     if (typeof row.adDone === "boolean") state.adDone = row.adDone;
     if (Array.isArray(row.analyzed)) state.analyzed = new Set(row.analyzed);
@@ -6080,8 +6102,8 @@
   }
 
   function pickWeeklyPlays() {
-    const recharge = PLAYS.find((item) => item.id === "recharge");
-    const others = shuffled(PLAYS.filter((item) => item.id !== "recharge"));
+    const recharge = shuffled(PLAYS.filter((item) => item.reward === "energy"))[0];
+    const others = shuffled(PLAYS.filter((item) => item.reward !== "energy"));
     return recharge ? [recharge, ...others.slice(0, 4)] : others.slice(0, 5);
   }
 
@@ -6117,7 +6139,9 @@
     worldSync.inMarket = true;
     ensureCoreListings();
     ensureTradableCash();
-    syncLocalPlayer();
+    // Restore this week's energy and completed activities before persisting the player.
+    // Persisting here used to overwrite the saved balance with createState()'s full energy.
+    syncLocalPlayer(false);
     if (!state.event) prepareWeek();
     else {
       computeWeekExpectations();
@@ -6934,9 +6958,10 @@
 
   function startActivity(kind, id) {
     if (!canAct()) return;
+    if (applyWeekActivity(readWallet(state.playerId))) renderActivities();
     if (kind === "job") {
       const job = JOBS.find((item) => item.id === id);
-      if (!job || state.jobsDone.has(id) || !spendEnergy(job.energy)) return;
+      if (!job || !state.weekJobs.some((item) => item.id === id) || state.jobsDone.has(id) || !spendEnergy(job.energy)) return;
       openMiniGame({ kind, id, game: job.game, title: job.name, copy: job.copy, pay: job.pay });
     } else if (kind === "intel") {
       const item = INTEL.find((entry) => entry.id === id);
@@ -6956,8 +6981,25 @@
       sendWallet();
     } else if (kind === "play") {
       const item = PLAYS.find((entry) => entry.id === id);
-      if (!item || state.playDone.has(id) || !spendEnergy(item.energy)) return;
-      openMiniGame({ kind, id, game: item.game, title: item.name, copy: item.copy, reward: item.reward });
+      if (!item || !state.weekPlays.some((entry) => entry.id === id) || state.playDone.has(id)) return;
+      if (item.reward === "energy" && state.energy >= state.energyMax) return;
+      if (!spendEnergy(item.energy)) return;
+      if (item.reward === "energy") {
+        // Save the attempt before opening so refreshing mid-game cannot reset the challenge.
+        state.playDone.add(id);
+        sendWallet();
+      }
+      openMiniGame({
+        kind,
+        id,
+        game: item.game,
+        title: item.name,
+        copy: item.copy,
+        reward: item.reward,
+        difficulty: item.difficulty,
+        passScore: item.passScore,
+        failCopy: item.failCopy,
+      });
     }
   }
 
@@ -7004,25 +7046,28 @@
           toast("🧠", "아쉬운 기억", "포인트는 못 얻었지만 경험은 남았습니다.");
         }
       } else if (spec.reward === "energy") {
-        if (score >= .9) {
+        const passScore = Number.isFinite(spec.passScore) ? spec.passScore : .9;
+        if (score >= passScore) {
           const before = state.energy;
           state.energy = Math.min(state.energyMax, state.energy + 1);
           const gained = state.energy - before;
           toast("🔋", gained > 0 ? "에너지 +1" : "에너지 가득", gained > 0 ? "집중력 회복에 성공했습니다." : "이미 에너지가 가득합니다.");
         } else {
-          toast("🔋", "회복 실패", "6칸을 전부 맞혀야 합니다. 다음 주에 다시 도전하세요.");
+          toast("🔋", "회복 실패", `${spec.failCopy || "시험을 통과해야 합니다."} 다음 주에 다시 도전하세요.`);
         }
       } else if (score >= .6) {
         grantIntel({ accuracy: .8 + score * .1, scope: score >= .85 ? "precise" : "one", icon: "🕵️" });
       } else {
         toast("❓", "힌트 실패", "정보를 열어내지 못했습니다.");
       }
-      const rewardPassed = spec.reward === "energy" ? score >= .9 : score >= .6;
+      const rewardPassed = spec.reward === "energy"
+        ? score >= (Number.isFinite(spec.passScore) ? spec.passScore : .9)
+        : score >= .6;
       tone(rewardPassed ? 640 : 180, .12, rewardPassed ? "square" : "sawtooth");
       checkMissions();
       checkBadges();
       renderAll();
-      sendWallet();
+      sendWallet({ allowEnergyIncrease: spec.reward === "energy" && rewardPassed });
     }
     state.currentPlay = null;
   }
@@ -7065,6 +7110,7 @@
   }
 
   function renderTiming(spec) {
+    const hard = spec.difficulty === "hard";
     let round = 0;
     let total = 0;
     function roundView() {
@@ -7072,7 +7118,7 @@
         <span class="overline">MINI GAME</span>
         <h2 id="play-title">${spec.title}</h2>
         <p class="play-copy">${spec.copy} (${round + 1}/3)</p>
-        <div class="timing-track"><i class="timing-zone"></i><i class="timing-needle" id="needle"></i></div>
+        <div class="timing-track"><i class="timing-zone"${hard ? ' style="left:45%;width:10%"' : ""}></i><i class="timing-needle" id="needle"${hard ? ' style="animation-duration:.72s"' : ""}></i></div>
         <div class="play-actions"><button class="cta-button" id="timing-hit" type="button">지금! <span>→</span></button></div>
       `;
       $("#timing-hit").addEventListener("click", () => {
@@ -7096,7 +7142,7 @@
 
   function renderMemory(spec) {
     const pool = ["🔵", "🔴", "🟡", "🟢", "🟣", "🟠", "⚪", "⬛"];
-    const hard = spec.reward === "energy";
+    const hard = spec.difficulty === "hard";
     const seq = Array.from({ length: hard ? 6 : 5 }, () => pool[Math.floor(random() * pool.length)]);
     els.playStage.innerHTML = `
       <span class="overline">MINI GAME</span>
@@ -7178,8 +7224,9 @@
   }
 
   function renderSort(spec) {
+    const count = spec.difficulty === "hard" ? 7 : 5;
     const nums = [];
-    while (nums.length < 5) {
+    while (nums.length < count) {
       const n = 10 + Math.floor(random() * 90);
       if (!nums.includes(n)) nums.push(n);
     }
