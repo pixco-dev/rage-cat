@@ -27,12 +27,13 @@
   const LOTTERY_TICKET_PRICE = 100;
   const LOTTERY_MAX_TICKETS = 2;
   const PROMO_DESK_STORE = "bull-lab-promo-desk-v1";
-  const PRICE_BOTS = [
-    { id: "tape-1", bias: 0.18 },
-    { id: "tape-2", bias: -0.14 },
-    { id: "tape-3", bias: 0.04 },
-    { id: "tape-4", bias: 0.1 },
-    { id: "tape-5", bias: -0.12 },
+  const AI_TRADER_COUNT = 500;
+  const AI_TRADER_ARCHETYPES = [
+    { id: "momentum", share: .28, bias: .01, momentum: .9, value: -.1, news: .45, risk: .05 },
+    { id: "value", share: .22, bias: -.01, momentum: -.15, value: .95, news: .2, risk: -.08 },
+    { id: "news", share: .2, bias: 0, momentum: .15, value: .05, news: 1.05, risk: -.02 },
+    { id: "contrarian", share: .17, bias: 0, momentum: -.8, value: .5, news: -.1, risk: .02 },
+    { id: "defensive", share: .13, bias: -.02, momentum: .1, value: .2, news: .25, risk: -.7 },
   ];
   const DEVICE_STORE = "bull-lab-device-v1";
   const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v1";
@@ -3482,6 +3483,7 @@
   }
 
   function flowImpact(asset, signedQty) {
+    if (!Number.isFinite(Number(signedQty)) || Number(signedQty) === 0) return 0;
     const float = Math.max(40, asset.float || 400);
     const k = isSchoolListing(asset) ? 0.85 : 0.3;
     const signed = signedQty >= 0 ? 1 : -1;
@@ -3494,15 +3496,28 @@
   }
 
   function botFlowFor(asset, bucket = currentBotBucket()) {
-    if (!asset || !isSchoolListing(asset)) return 0;
+    if (!asset) return 0;
     const climate = climateTone();
+    const momentum = Math.max(-1, Math.min(1, Number(asset.lastChange || 0) * 7));
+    const anchor = Math.max(5, Number(asset.initialPrice || asset.weekOpen || asset.price) || 5);
+    const value = Math.max(-1, Math.min(1, (anchor - Number(asset.price || anchor)) / anchor * 4));
+    const news = Math.max(-1, Math.min(1, Number(state?.expected?.[asset.id] || 0) * 5));
+    const risk = Math.max(-1, Math.min(1, (Number(asset.risk || 3) - 3) / 2));
     let qty = 0;
-    PRICE_BOTS.forEach((bot) => {
-      const fire = hashUnit(`${asset.id}|${bot.id}|${bucket}|fire`);
-      if (fire > 0.24) return;
-      const buyP = Math.max(0.12, Math.min(0.88, 0.5 + bot.bias * 0.28 + climate * 0.035));
-      const dir = hashUnit(`${asset.id}|${bot.id}|${bucket}|dir`) < buyP ? 1 : -1;
-      qty += dir * (1 + Math.floor(hashUnit(`${asset.id}|${bot.id}|${bucket}|qty`) * 3));
+    AI_TRADER_ARCHETYPES.forEach((group) => {
+      const population = Math.round(AI_TRADER_COUNT * group.share);
+      const activity = .012 + hashUnit(`${asset.id}|${group.id}|${bucket}|activity`) * .024;
+      const active = Math.max(1, Math.round(population * activity));
+      const signal = group.bias
+        + momentum * group.momentum * .22
+        + value * group.value * .2
+        + news * group.news * .24
+        + risk * group.risk * .12
+        + climate * .025;
+      const buyP = Math.max(.12, Math.min(.88, .5 + signal));
+      const noise = (hashUnit(`${asset.id}|${group.id}|${bucket}|noise`) * 2 - 1) * Math.sqrt(active);
+      const averageOrder = 1 + Math.floor(hashUnit(`${asset.id}|${group.id}|${bucket}|size`) * 3);
+      qty += Math.round((active * (buyP * 2 - 1) + noise) * averageOrder);
     });
     return qty;
   }
@@ -3511,11 +3526,13 @@
     if (!asset) return 0;
     let price = Number(asset.price) || 0;
     const climate = climateTone();
+    const aiFlow = botFlowFor(asset);
     if (isSchoolListing(asset)) {
       price *= (1 + climate * 0.007);
-      price *= (1 + Math.max(-0.055, Math.min(0.055, flowImpact(asset, botFlowFor(asset)))));
+      price *= (1 + Math.max(-0.055, Math.min(0.055, flowImpact(asset, aiFlow))));
     } else {
       price *= (1 + climate * 0.003);
+      price *= (1 + Math.max(-0.02, Math.min(0.02, flowImpact(asset, aiFlow) * .35)));
     }
     return Math.max(5, round1(price));
   }
@@ -3539,7 +3556,7 @@
     const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
     const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.65 : 1);
     const climate = climateTone() * (isSchoolListing(asset) ? 0.0011 : 0.0005);
-    const bots = isSchoolListing(asset) ? Math.max(-0.012, Math.min(0.012, flowImpact(asset, botFlowFor(asset)) * 0.4)) : 0;
+    const bots = Math.max(-0.012, Math.min(0.012, flowImpact(asset, botFlowFor(asset)) * (isSchoolListing(asset) ? .4 : .2)));
     const wiggle = flow * 0.01 + unit * noise * 0.055 + climate + bots;
     return Math.max(5, round1(asset.price * (1 + Math.max(-0.018, Math.min(0.018, wiggle)))));
   }
@@ -3598,10 +3615,10 @@
   }
 
   function flowHint(asset) {
-    const flow = (asset.weekFlow || asset.lastFlow || 0) + (isSchoolListing(asset) ? botFlowFor(asset) : 0);
-    if (flow > 2) return { text: "매수세", type: "up" };
-    if (flow < -2) return { text: "매도세", type: "down" };
-    return { text: "보합 수급", type: "flat" };
+    const flow = (asset.weekFlow || asset.lastFlow || 0) + botFlowFor(asset);
+    if (flow > 2) return { text: "AI 포함 매수세", type: "up" };
+    if (flow < -2) return { text: "AI 포함 매도세", type: "down" };
+    return { text: "AI 관망", type: "flat" };
   }
 
   function getActor(playerId) {
@@ -4261,7 +4278,7 @@
   function scheduleBots() {}
 
   function botTick() {
-    /* price bots stay off the ranking and never found companies; they only tilt school quotes */
+    /* 500 AI traders are aggregated on demand and never create player or Firebase rows. */
   }
 
   function stopWorldSync() {
@@ -5171,7 +5188,7 @@
         creditFounderOps(asset);
       }
       const newsChange = state.changes[asset.id] || 0;
-      const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400) * (asset.playerCompany ? 0.2 : 0.3);
+      const flow = ((asset.weekFlow || 0) + botFlowFor(asset)) / Math.max(40, asset.float || 400) * (asset.playerCompany ? 0.2 : 0.3);
       let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange + flow;
       extra += climateTone() * (asset.playerCompany ? 0.003 : 0.008);
       if (!asset.playerCompany && Math.abs(extra) < 0.003) {
@@ -5280,7 +5297,7 @@
     const sync = worldSync.connected && worldSync.online
       ? "실시간 연결"
       : (worldSync.online ? "공유 연결" : (firebaseReady() ? "재연결 중" : "오프라인 저장"));
-    els.playerCount.textContent = `${n}명 접속 · ${sync}`;
+    els.playerCount.textContent = `${n}명 접속 · AI ${AI_TRADER_COUNT}명 · ${sync}`;
     els.playerCount.classList.toggle("is-online", worldSync.connected && worldSync.online);
     els.playerCount.classList.toggle("is-reconnecting", firebaseReady() && !(worldSync.connected && worldSync.online));
   }
