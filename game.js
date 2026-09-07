@@ -65,8 +65,8 @@
   const MAX_AD_IMAGE_DATA_LENGTH = 60000;
   const ACTIVITY_PASS_SCORE = 0.65;
   const CLOCK_TICK_MS = 5000;
-  const TICK_MS = 1800;
-  const REMOTE_RENDER_MS = 250;
+  const TICK_MS = 2400;
+  const REMOTE_RENDER_MS = 500;
   const TICK_CAP = 96;
   const LIVE_W = 640;
   const LIVE_H = 180;
@@ -845,6 +845,13 @@
     applyingRemote: false,
     unsub: null,
     renderTimer: null,
+    renderFullPending: false,
+    chatRenderKey: "",
+    rankRenderKey: "",
+    liveBoardRenderKey: "",
+    adsRenderKey: "",
+    lendersRenderKey: "",
+    portfolioRenderKey: "",
     banUnsub: null,
     haltUnsub: null,
     climate: 0,
@@ -2355,7 +2362,7 @@
 
   function humansRanked() {
     if (!state) return [];
-    syncLocalPlayer();
+    syncLocalPlayer(false);
     const byId = new Map();
     (state.players || []).forEach((player) => {
       if (!player?.id || player.bot || String(player.id).startsWith("bot-")) return;
@@ -2431,7 +2438,7 @@
       }
     });
     purgeBots();
-    syncLocalPlayer();
+    syncLocalPlayer(false);
   }
 
   function publicLender(row) {
@@ -3269,7 +3276,7 @@
     return round1((player.cash || 0) + holdingsValueOf(player.holdings) + lendingNetFor(player.id));
   }
 
-  function syncLocalPlayer() {
+  function syncLocalPlayer(persist = true) {
     if (!state) return;
     if (session?.id) state.playerId = session.id;
     if (session?.nick) state.playerName = session.nick;
@@ -3292,10 +3299,12 @@
       return list.findIndex((item) => item.id === player.id) === index;
     });
     if (!state.players.some((item) => item.id === state.playerId)) state.players.unshift(snapshot);
-    state.players.forEach((player) => {
-      player.total = playerTotal(player);
-    });
-    writeWallet();
+    if (persist) {
+      state.players.forEach((player) => {
+        player.total = playerTotal(player);
+      });
+      writeWallet();
+    }
   }
 
   function readWallets() {
@@ -4248,6 +4257,7 @@
     worldSync.buildTimer = null;
     worldSync.putTimer = null;
     worldSync.renderTimer = null;
+    worldSync.renderFullPending = false;
   }
 
   function kstNowMs() {
@@ -4829,11 +4839,16 @@
       : "Firebase 설정이 없습니다. firebase-config.js에 프로젝트 값을 넣어 주세요.");
   }
 
-  function scheduleRemoteRender() {
+  function scheduleRemoteRender(full = false) {
+    if (full) worldSync.renderFullPending = true;
     if (worldSync.renderTimer) return;
     worldSync.renderTimer = setTimeout(() => {
       worldSync.renderTimer = null;
-      if (state?.active) renderAll();
+      const needsFull = worldSync.renderFullPending;
+      worldSync.renderFullPending = false;
+      if (!state?.active) return;
+      if (needsFull) renderAll();
+      else renderRemoteUpdate();
     }, REMOTE_RENDER_MS);
   }
 
@@ -4844,15 +4859,21 @@
       const before = totalAssets();
       const weekBefore = activityWeekKey();
       const result = mergeWorld(remote, { preferLocal });
+      let needsFullRender = false;
       if (activityWeekKey() !== weekBefore) {
         computeWeekExpectations();
         startWeekActivities(true);
+        needsFullRender = true;
       } else if (result.weekChanged) {
         computeWeekExpectations();
+        needsFullRender = true;
       }
-      if (result.settled) showWeekResult(totalAssets() - before, totalAssets(), 0);
+      if (result.settled) {
+        showWeekResult(totalAssets() - before, totalAssets(), 0);
+        needsFullRender = true;
+      }
       ensureCoreListings();
-      scheduleRemoteRender();
+      scheduleRemoteRender(needsFullRender);
     } finally {
       worldSync.applyingRemote = false;
     }
@@ -5443,13 +5464,20 @@
   function renderChat() {
     if (!els.chatLog) return;
     const rooms = worldSync.chatRooms || [];
+    const room = rooms.find((item) => item.id === activeChatRoomId);
+    const chatKey = `${activeChatRoomId}|${rooms.map((item) => {
+      const messages = item.messages || [];
+      const last = messages[messages.length - 1];
+      return `${item.id}:${item.name}:${messages.length}:${last?.id || ""}`;
+    }).join("|")}|${(room?.messages || []).map((msg) => `${msg.id}:${msg.text}:${msg.ts || ""}`).join("|")}`;
+    if (worldSync.chatRenderKey === chatKey) return;
+    worldSync.chatRenderKey = chatKey;
     if (els.chatRoomCount) els.chatRoomCount.textContent = `${rooms.length}개 방`;
     if (els.chatRoomSelect) {
       els.chatRoomSelect.innerHTML = rooms.length
         ? rooms.map((room) => `<option value="${esc(room.id)}" ${room.id === activeChatRoomId ? "selected" : ""}>${esc(room.name)}</option>`).join("")
         : `<option value="">방 없음</option>`;
     }
-    const room = rooms.find((item) => item.id === activeChatRoomId);
     if (!room) {
       els.chatLog.innerHTML = `<li class="empty-log">방을 만들거나 골라 대화를 시작하세요.</li>`;
       return;
@@ -5812,6 +5840,13 @@
   function renderLenders() {
     if (!els.lendList) return;
     const lenders = (state.lenders || []).slice().sort((a, b) => (b.pool || 0) - (a.pool || 0));
+    const lendersKey = `${state.playerId}|${lenders.map((lender) => (
+      `${lender.id}:${lender.name}:${lender.ownerId}:${lender.rate}:${lender.pool}`
+    )).join("|")}|${(state.loans || []).map((loan) => (
+      `${loan.id}:${loan.lenderId}:${loan.borrowerId}:${loan.status}:${loanRemaining(loan)}`
+    )).join("|")}`;
+    if (worldSync.lendersRenderKey === lendersKey) return;
+    worldSync.lendersRenderKey = lendersKey;
     const myDebt = (state.loans || []).reduce((sum, loan) => (
       loan.borrowerId === state.playerId ? sum + loanRemaining(loan) : sum
     ), 0);
@@ -5909,6 +5944,11 @@
     let top = ranked.slice(0, 5);
     if (meIndex >= 5) top = [...ranked.slice(0, 4), ranked[meIndex]];
     const place = (player) => ranked.findIndex((item) => item.id === player.id) + 1;
+    const rankKey = `${state?.playerId || ""}:${state?.active ? 1 : 0}|${top.map((player) => (
+      `${place(player)}:${player.id}:${player.name || ""}:${player.founded?.symbol || ""}:${Math.round((player.total || 0) * 10)}`
+    )).join("|")}`;
+    if (worldSync.rankRenderKey === rankKey) return;
+    worldSync.rankRenderKey = rankKey;
     const rows = top.map((player) => {
       const me = player.id === state?.playerId;
       const firm = player.founded?.symbol || "";
@@ -5980,6 +6020,12 @@
   function renderAds() {
     const ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season);
     if (!els.adTicker) return;
+    const adsKey = `${state.season}:${state.week}|${ads.map((asset) => {
+      const image = String(asset.ad?.image || "");
+      return `${asset.id}:${asset.symbol}:${asset.founderName || ""}:${asset.ad.claim}:${asset.ad.slogan}:${image.length}:${image.slice(-16)}`;
+    }).join("|")}`;
+    if (worldSync.adsRenderKey === adsKey) return;
+    worldSync.adsRenderKey = adsKey;
     if (!ads.length) {
       els.adTicker.textContent = "아직 올라온 광고가 없습니다. 창업자가 집행하면 이곳에 뜹니다.";
       els.adList.innerHTML = "";
@@ -6177,6 +6223,27 @@
     renderBadges();
     renderLog();
     renderActivities();
+    renderRoom();
+    renderAds();
+    renderLenders();
+    renderChat();
+  }
+
+  function renderRemoteUpdate() {
+    if (!state) return;
+    renderSummary();
+    if (els.closeMarket) els.closeMarket.disabled = !state.active;
+    if (isDeskEditing()) {
+      patchAssetRows();
+      updateLiveCharts();
+      renderClock();
+      renderSyncStatus();
+      return;
+    }
+    renderAssets();
+    renderLiveBoard();
+    updateLiveCharts();
+    renderPortfolio();
     renderRoom();
     renderAds();
     renderLenders();
@@ -6387,7 +6454,6 @@
       const asset = assetById(row.dataset.id);
       if (asset) patchAssetRow(row, asset);
     });
-    updateLiveCharts();
     return true;
   }
 
@@ -6395,26 +6461,24 @@
     ensureCoreListings();
     if (!els.assetList) return;
     if (patchAssetRows()) {
-      if (!qtyFieldFocused()) renderLiveBoard();
       return;
     }
     if (qtyFieldFocused()) {
-      const have = new Set([...els.assetList.querySelectorAll(".asset-row")].map((row) => row.dataset.id));
+      const rows = new Map(
+        [...els.assetList.querySelectorAll(".asset-row")].map((row) => [row.dataset.id, row]),
+      );
       state.assets.forEach((asset) => {
-        if (have.has(asset.id)) {
-          const row = [...els.assetList.querySelectorAll(".asset-row")].find((item) => item.dataset.id === asset.id);
+        if (rows.has(asset.id)) {
+          const row = rows.get(asset.id);
           if (row) patchAssetRow(row, asset);
           return;
         }
         els.assetList.insertAdjacentHTML("beforeend", assetRowMarkup(asset, "1"));
       });
-      updateLiveCharts();
       return;
     }
     const qtyMap = readQtyMap();
     els.assetList.innerHTML = state.assets.map((asset) => assetRowMarkup(asset, qtyMap[asset.id])).join("");
-    renderLiveBoard();
-    updateLiveCharts();
   }
 
   function selectChart(id) {
@@ -6442,9 +6506,14 @@
     if (!els.liveChartPills || !state?.assets) return;
     const list = ensureLiveChartSelection();
     if (!list.length) {
+      if (worldSync.liveBoardRenderKey === "empty") return;
+      worldSync.liveBoardRenderKey = "empty";
       renderLiveEmpty();
       return;
     }
+    const boardKey = `${selectedChartId}|${list.map((asset) => `${asset.id}:${asset.symbol}:${asset.name}:${asset.color}`).join("|")}`;
+    if (worldSync.liveBoardRenderKey === boardKey) return;
+    worldSync.liveBoardRenderKey = boardKey;
     els.liveChartPills.innerHTML = list.map((asset) => `
       <button type="button" data-chart-id="${esc(asset.id)}" class="${asset.id === selectedChartId ? "active" : ""}" style="--asset-color:${safeColor(asset.color)}">
         <b>${esc(asset.symbol)}</b>
@@ -6504,6 +6573,12 @@
     const invested = holdingsValue();
     const ratio = total > 0 ? invested / total : 0;
     const held = state.assets.filter((asset) => ensureHolding(state.holdings, asset.id).qty > 0);
+    const portfolioKey = `${state.playerId}:${Math.round(state.cash * 10)}|${held.map((asset) => {
+      const holding = state.holdings[asset.id];
+      return `${asset.id}:${holding.qty}:${Math.round(holding.avg * 10)}:${Math.round(quotePrice(asset) * 10)}`;
+    }).join("|")}`;
+    if (worldSync.portfolioRenderKey === portfolioKey) return;
+    worldSync.portfolioRenderKey = portfolioKey;
     els.holdingCount.textContent = `${held.length}개 자산`;
     els.investedRatio.textContent = `${Math.round(ratio * 100)}%`;
 
