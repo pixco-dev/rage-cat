@@ -2,18 +2,20 @@
   "rules": {
     "bull-lab": {
       ".read": true,
-      ".write": true,
       "handles": {
         "$handle": {
+          ".write": "(!data.exists() && newData.exists()) || !newData.exists()",
           ".validate": "newData.hasChildren(['id', 'nick', 'createdAt']) && newData.child('id').isString() && newData.child('id').val().length >= 3 && newData.child('id').val().length <= 16 && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('createdAt').isNumber()"
         }
       },
       "accounts": {
         "$id": {
+          ".write": "newData.exists() && (!data.exists() || (data.child('hash').val() === newData.child('hash').val() && data.child('salt').val() === newData.child('salt').val()))",
           ".validate": "newData.hasChildren(['id', 'nick', 'salt', 'hash', 'createdAt']) && newData.child('id').isString() && newData.child('id').val() === $id && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('salt').isString() && newData.child('salt').val().length >= 16 && newData.child('hash').isString() && newData.child('hash').val().length === 64 && newData.child('createdAt').isNumber() && (!data.exists() || (data.child('hash').val() === newData.child('hash').val() && data.child('salt').val() === newData.child('salt').val()))"
         }
       },
       "devices": {
+        ".write": true,
         "$device": {
           ".validate": "newData.hasChildren(['createdAt', 'accounts']) && newData.child('createdAt').isNumber()",
           "accounts": {
@@ -24,17 +26,39 @@
           }
         }
       },
+      "bans": {
+        ".write": true,
+        "$id": {
+          ".validate": "newData.hasChildren(['id', 'name', 'at']) && newData.child('id').isString() && newData.child('id').val().length >= 3 && newData.child('id').val().length <= 16 && newData.child('name').isString() && newData.child('name').val().length <= 16 && newData.child('at').isNumber()"
+        }
+      },
+      "halt": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['stopped', 'at', 'by']) && newData.child('stopped').isBoolean() && newData.child('at').isNumber() && newData.child('by').isString() && newData.child('by').val().length <= 32"
+      },
       "climate": {
+        ".write": true,
         ".validate": "newData.hasChildren(['tone', 'at']) && newData.child('tone').isNumber() && newData.child('tone').val() >= -10 && newData.child('tone').val() <= 10 && newData.child('at').isNumber()"
       },
       "presence": {
+        ".write": true,
         "$player": {
           "$client": {
             ".validate": "newData.hasChildren(['playerId', 'playerName', 'clientId', 'online', 'lastSeen']) && newData.child('playerId').isString() && newData.child('playerId').val().length <= 16 && newData.child('playerName').isString() && newData.child('playerName').val().length <= 16 && newData.child('clientId').isString() && newData.child('clientId').val().length <= 64 && newData.child('online').isBoolean() && newData.child('lastSeen').isNumber()"
           }
         }
       },
+      "gamble": {
+        ".write": true
+      },
+      "lottery": {
+        ".write": true
+      },
+      "settlements": {
+        ".write": true
+      },
       "world": {
+        ".write": true,
         "meta": {
           ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true"
         },
