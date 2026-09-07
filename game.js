@@ -28,6 +28,8 @@
   const LOTTERY_MAX_TICKETS = 2;
   const PROMO_DESK_STORE = "bull-lab-promo-desk-v1";
   const AI_TRADER_COUNT = 500;
+  const AI_QUOTE_BUCKET_MS = 20000;
+  const TRADE_FEE_RATE = .005;
   const AI_TRADER_ARCHETYPES = [
     { id: "momentum", share: .28, bias: .01, momentum: .9, value: -.1, news: .45, risk: .05 },
     { id: "value", share: .22, bias: -.01, momentum: -.15, value: .95, news: .2, risk: -.08 },
@@ -66,7 +68,7 @@
   const MAX_AD_IMAGE_DATA_LENGTH = 60000;
   const ACTIVITY_PASS_SCORE = 0.65;
   const CLOCK_TICK_MS = 5000;
-  const TICK_MS = 2400;
+  const TICK_MS = 6000;
   const REMOTE_RENDER_MS = 500;
   const TICK_CAP = 96;
   const LIVE_W = 640;
@@ -3522,7 +3524,7 @@
   }
 
   function currentBotBucket() {
-    return Math.floor((kstClock.ok ? kstNowMs() : Date.now()) / 7000);
+    return Math.floor((kstClock.ok ? kstNowMs() : Date.now()) / AI_QUOTE_BUCKET_MS);
   }
 
   function botFlowFor(asset, bucket = currentBotBucket()) {
@@ -3682,6 +3684,12 @@
     };
   }
 
+  function tradeTotal(price, qty, side) {
+    const gross = Math.max(0, Number(price) || 0) * Math.max(0, Number(qty) || 0);
+    const multiplier = side === "buy" ? 1 + TRADE_FEE_RATE : 1 - TRADE_FEE_RATE;
+    return round1(gross * multiplier);
+  }
+
   function executeTrade(playerId, assetId, side, qty, options = {}) {
     const actor = getActor(playerId);
     const asset = assetById(assetId);
@@ -3694,7 +3702,7 @@
       ? Math.max(5, round1(asset.price * (1 + flowImpact(asset, signedQty))))
       : asset.price;
     if (side === "buy") {
-      const cost = round1(px * qty);
+      const cost = tradeTotal(px, qty, side);
       if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
       holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
       holding.qty += qty;
@@ -3703,8 +3711,8 @@
       if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
     } else {
       if (qty > holding.qty) return { ok: false, err: "qty" };
-      const proceeds = round1(px * qty);
-      if (actor.isLocal && px > holding.avg) state.profitableSales += 1;
+      const proceeds = tradeTotal(px, qty, side);
+      if (actor.isLocal && proceeds > holding.avg * qty) state.profitableSales += 1;
       holding.qty -= qty;
       actor.cash = round1(actor.cash + proceeds);
       if (holding.qty === 0) holding.avg = 0;
@@ -3741,7 +3749,7 @@
       const etag = read.headers.get("ETag");
       const traded = nextTradedAsset(await read.json(), localAsset, side, qty);
       if (!traded) throw new Error("firebase-rest-invalid-asset");
-      if (side === "buy" && traded.fillPrice * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
+      if (side === "buy" && tradeTotal(traded.fillPrice, qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
       if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return { ok: false, err: "qty" };
       const headers = { "Content-Type": "application/json" };
       if (etag) headers["If-Match"] = etag;
@@ -3772,7 +3780,7 @@
     const localAsset = assetById(assetId);
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
-    if (side === "buy" && Math.max(quotePrice(localAsset), Number(localAsset.price) || 0) * qty > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (side === "buy" && tradeTotal(Math.max(quotePrice(localAsset), Number(localAsset.price) || 0), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
     if (worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
 
@@ -3786,15 +3794,15 @@
       pushTick(asset, quotePrice(asset));
       const holding = ensureHolding(state.holdings, assetId);
       const fillPrice = result.fillPrice;
-      const total = round1(fillPrice * qty);
+      const total = tradeTotal(fillPrice, qty, side);
       let realizedProfit = 0;
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
         state.cash = round1(state.cash - total);
       } else {
-        realizedProfit = round1((fillPrice - holding.avg) * qty);
-        if (fillPrice > holding.avg) state.profitableSales += 1;
+        realizedProfit = round1(total - holding.avg * qty);
+        if (realizedProfit > 0) state.profitableSales += 1;
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
         if (holding.qty === 0) holding.avg = 0;
@@ -6443,10 +6451,11 @@
   function assetRowMarkup(asset, qtyValue) {
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
-    const maxBuy = Math.floor(state.cash / Math.max(1, quotePrice(asset)));
+    const quote = quotePrice(asset);
+    const maxBuy = Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE)));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? (quotePrice(asset) - holding.avg) * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
     const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
@@ -6464,7 +6473,7 @@
           <span class="risk-dots" title="위험도 ${asset.risk}/5">${riskDots(asset)}</span>
         </div>
         <div class="asset-price">
-          <strong class="asset-last">${money(quotePrice(asset))}</strong>
+          <strong class="asset-last">${money(quote)}</strong>
           ${sparkSvg(asset, SPARK_W, SPARK_H)}
           <span class="asset-change ${changeType}">${asset.lastChange === 0 ? "신규" : percent(asset.lastChange)} 지난 공개</span>
           <span class="flow-pill ${flow.type}">${flow.text}</span>
@@ -6498,13 +6507,14 @@
     if (!row || !asset) return;
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
-    const maxBuy = Math.floor(state.cash / Math.max(1, quotePrice(asset)));
+    const quote = quotePrice(asset);
+    const maxBuy = Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE)));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? (quotePrice(asset) - holding.avg) * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const last = row.querySelector(".asset-last");
-    if (last) last.textContent = money(quotePrice(asset));
+    if (last) last.textContent = money(quote);
     const change = row.querySelector(".asset-change");
     if (change) {
       change.className = `asset-change ${changeType}`;
