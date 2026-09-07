@@ -22,6 +22,7 @@
   const HALT_PATH = "bull-lab/halt";
   const CLIMATE_PATH = "bull-lab/climate";
   const GAMBLE_PATH = "bull-lab/gamble/tables";
+  const GAMBLE_DAILY_PATH = "bull-lab/gamble/daily";
   const GAMBLE_SETTLE_STORE = "bull-lab-gamble-settled-v2";
   const MIN_GAMBLE_STAKE = 10;
   const GAMBLE_MAX_SEATS = 5;
@@ -910,6 +911,7 @@
     gambleUnsub: null,
     gambleBusy: false,
     gambleActiveId: "",
+    gambleDailyClaim: null,
     lottery: null,
     lotteryUnsub: null,
     lotteryBusy: false,
@@ -1327,6 +1329,126 @@
     return `${GAMBLE_PATH}/${safeFbKey(id)}`;
   }
 
+  function gambleDayKey(ms = kstClock.ok ? kstNowMs() : Date.now()) {
+    return parseKstParts(ms).ymd;
+  }
+
+  function gambleDailyPath(playerId = state?.playerId, day = gambleDayKey()) {
+    return `${GAMBLE_DAILY_PATH}/${day}/${safeFbKey(playerId)}`;
+  }
+
+  function gambleUseFromTables(playerId = state?.playerId, day = gambleDayKey()) {
+    if (!playerId) return null;
+    for (const table of Object.values(worldSync.gambleTables || {})) {
+      const seat = seatOnTable(table, playerId);
+      if (!seat) continue;
+      const joinedAt = Number(seat.joinedAt || table.createdAt) || 0;
+      if (joinedAt > 0 && gambleDayKey(joinedAt) === day) {
+        return { playerId, day, tableId: table.id, claimedAt: joinedAt };
+      }
+    }
+    return null;
+  }
+
+  function gambleUseToday() {
+    const day = gambleDayKey();
+    const claim = worldSync.gambleDailyClaim;
+    if (claim?.playerId === state?.playerId && claim?.day === day) return claim;
+    return gambleUseFromTables(state?.playerId, day);
+  }
+
+  async function refreshDailyGambleClaim() {
+    if (!state?.playerId) return null;
+    const day = gambleDayKey();
+    const fromTables = gambleUseFromTables(state.playerId, day);
+    if (fromTables) {
+      worldSync.gambleDailyClaim = fromTables;
+      return fromTables;
+    }
+    try {
+      const response = await firebaseRestRequest(gambleDailyPath(state.playerId, day), {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return null;
+      const row = await response.json();
+      worldSync.gambleDailyClaim = row && typeof row === "object" ? row : null;
+      return worldSync.gambleDailyClaim;
+    } catch {
+      return null;
+    }
+  }
+
+  async function claimDailyGamble(tableId) {
+    const playerId = state?.playerId;
+    const day = gambleDayKey();
+    if (!playerId || !tableId) return { ok: false, err: "network" };
+    const used = gambleUseToday();
+    if (used) return { ok: false, err: "daily", claim: used };
+    const claim = {
+      playerId,
+      playerName: state.playerName || playerId,
+      day,
+      tableId,
+      claimedAt: kstClock.ok ? kstNowMs() : Date.now(),
+    };
+    const path = gambleDailyPath(playerId, day);
+    const db = firebaseDb();
+    try {
+      if (db) {
+        const result = await db.ref(path).transaction((current) => {
+          if (current) return;
+          return claim;
+        }, undefined, false);
+        const saved = result.snapshot.val();
+        worldSync.gambleDailyClaim = saved || null;
+        const mine = !!result.committed && saved?.tableId === tableId;
+        return mine ? { ok: true, claim: saved } : { ok: false, err: "daily", claim: saved };
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return { ok: false, err: "network" };
+        const etag = read.headers.get("ETag");
+        const current = await read.json();
+        if (current) {
+          worldSync.gambleDailyClaim = current;
+          return { ok: false, err: "daily", claim: current };
+        }
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
+        const write = await firebaseRestRequest(path, { method: "PUT", headers, body: JSON.stringify(claim) });
+        if (write.status === 412) continue;
+        if (!write.ok) return { ok: false, err: "network" };
+        worldSync.gambleDailyClaim = claim;
+        return { ok: true, claim };
+      }
+    } catch {
+      return { ok: false, err: "network" };
+    }
+    return { ok: false, err: "network" };
+  }
+
+  async function releaseDailyGambleClaim(tableId) {
+    const claim = worldSync.gambleDailyClaim;
+    if (!claim || claim.tableId !== tableId || !state?.playerId) return;
+    const path = gambleDailyPath(state.playerId, claim.day || gambleDayKey());
+    const db = firebaseDb();
+    try {
+      if (db) {
+        await db.ref(path).transaction((current) => current?.tableId === tableId ? null : undefined, undefined, false);
+      } else {
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return;
+        const current = await read.json();
+        if (current?.tableId !== tableId) return;
+        const headers = {};
+        const etag = read.headers.get("ETag");
+        if (etag) headers["If-Match"] = etag;
+        await firebaseRestRequest(path, { method: "DELETE", headers });
+      }
+      worldSync.gambleDailyClaim = null;
+    } catch {
+      /* a failed reservation is harmless and can be checked again later */
+    }
+  }
+
   async function putGambleTable(table) {
     if (!table?.id) return false;
     const response = await firebaseRestRequest(gambleTablePath(table.id), {
@@ -1380,6 +1502,9 @@
       toast("🎲", "시장 입장 전", "먼저 투자 시작하기를 눌러 시장에 들어가 주세요.");
       return;
     }
+    refreshDailyGambleClaim().then(() => {
+      if (els.gambleModal && !els.gambleModal.hidden) renderGambleModal();
+    });
     if (els.gambleCreateError) {
       els.gambleCreateError.hidden = true;
       els.gambleCreateError.textContent = "";
@@ -1421,15 +1546,18 @@
     if (!els.gambleModal) return;
     const hoursOpen = isGambleHoursOpen();
     const mine = myOpenGambleSeat();
+    const usedToday = gambleUseToday();
     const spendable = gambleSpendableCash();
     if (els.gambleStatus) {
       els.gambleStatus.textContent = isServerStopped()
         ? "서버 정지 중 · 몰빵데스크 닫힘"
         : mine
           ? `참여 중 · 바이인 ${money(mine.stake)} · ${gambleHoursLabel()}`
-          : `${gambleHoursLabel()} · 현금 ${money(spendable)}까지`;
+          : usedToday
+            ? `오늘 참여 완료 · ${gambleDayKey()} · 내일 다시 참여할 수 있습니다.`
+            : `${gambleHoursLabel()} · 현금 ${money(spendable)}까지 · 하루 1회`;
     }
-    if (els.gambleCreate) els.gambleCreate.hidden = !!(mine || !hoursOpen || isServerStopped());
+    if (els.gambleCreate) els.gambleCreate.hidden = !!(mine || usedToday || !hoursOpen || isServerStopped());
     const openTables = Object.values(worldSync.gambleTables || {})
       .filter((table) => table && (table.status === "open" || table.status === "locked" || table.status === "reveal"))
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
@@ -1443,14 +1571,14 @@
           const seats = gambleSeatList(table);
           const seated = !!seatOnTable(table, state?.playerId);
           const full = seats.length >= (table.maxSeats || GAMBLE_MAX_SEATS);
-          const canJoin = !seated && !mine && hoursOpen && table.status === "open" && !full && !isServerStopped();
+          const canJoin = !seated && !mine && !usedToday && hoursOpen && table.status === "open" && !full && !isServerStopped();
           const statusLabel = table.status === "open" ? "모집 중" : "시작됨 · 입장 마감";
           return `<article class="gamble-row" data-table="${esc(table.id)}">
             <div>
               <b>주사위 · ${money(table.stake)}</b>
               <span>${esc(table.hostName || table.hostId)} · ${seats.length}/${table.maxSeats || GAMBLE_MAX_SEATS}명 · ${esc(statusLabel)}</span>
             </div>
-            <button type="button" data-gamble-join="${esc(table.id)}" ${canJoin ? "" : "disabled"}>${seated ? "내 자리" : table.status !== "open" ? "마감" : full ? "만원" : "참가"}</button>
+            <button type="button" data-gamble-join="${esc(table.id)}" ${canJoin ? "" : "disabled"}>${seated ? "내 자리" : usedToday ? "오늘 참여함" : table.status !== "open" ? "마감" : full ? "만원" : "참가"}</button>
           </article>`;
         }).join("");
       }
@@ -1541,6 +1669,10 @@
       setGambleCreateError("이미 다른 데스크에 앉아 있습니다.");
       return;
     }
+    if (gambleUseToday()) {
+      setGambleCreateError("몰빵데스크는 한 사람당 하루에 한 번만 참여할 수 있습니다.");
+      return;
+    }
     let stake = Math.round(Number(els.gambleStake?.value) || 0);
     stake = Math.floor(stake / 10) * 10;
     const cashCap = Math.floor(gambleSpendableCash() / 10) * 10;
@@ -1552,14 +1684,10 @@
       setGambleCreateError(`보유 현금 ${money(cashCap)}까지 걸 수 있습니다.`);
       return;
     }
-    const paid = deductGambleStake(stake);
-    if (!paid.ok) {
-      setGambleCreateError(paid.err === "cash" ? "현금이 부족합니다." : "바이인을 확인하세요.");
-      return;
-    }
     worldSync.gambleBusy = true;
     setGambleCreateError("");
     const id = makeId("gb");
+    let paid = null;
     const now = Date.now();
     const table = {
       id,
@@ -1583,6 +1711,19 @@
       result: null,
     };
     try {
+      const daily = await claimDailyGamble(id);
+      if (!daily.ok) {
+        setGambleCreateError(daily.err === "daily"
+          ? "오늘은 이미 몰빵데스크에 참여했습니다. 내일 다시 이용해 주세요."
+          : "하루 참여 기록을 확인하지 못했습니다. 잠시 후 다시 시도하세요.");
+        return;
+      }
+      paid = deductGambleStake(stake);
+      if (!paid.ok) {
+        await releaseDailyGambleClaim(id);
+        setGambleCreateError(paid.err === "cash" ? "현금이 부족합니다." : "바이인을 확인하세요.");
+        return;
+      }
       const ok = await putGambleTable(table);
       if (!ok) throw new Error("put");
       worldSync.gambleTables[id] = table;
@@ -1590,7 +1731,8 @@
       toast("🎲", "몰빵데스크", "주사위 데스크를 열었습니다. 2명 이상이면 시작할 수 있습니다.");
       renderGambleModal();
     } catch {
-      refundGambleStake(stake);
+      if (paid?.ok) refundGambleStake(stake);
+      await releaseDailyGambleClaim(id);
       setGambleCreateError("데스크를 열지 못했습니다. 잠시 후 다시 시도하세요.");
     } finally {
       worldSync.gambleBusy = false;
@@ -1612,18 +1754,18 @@
       toast("🎲", "참가 중", "이미 다른 데스크에 앉아 있습니다.");
       return;
     }
+    if (gambleUseToday()) {
+      toast("🎲", "오늘 참여 완료", "몰빵데스크는 한 사람당 하루에 한 번만 참여할 수 있습니다.");
+      return;
+    }
     if (seatOnTable(table, state.playerId)) return;
     const seats = gambleSeatList(table);
     if (seats.length >= (table.maxSeats || GAMBLE_MAX_SEATS)) {
       toast("🎲", "만원", "자리가 없습니다.");
       return;
     }
-    const paid = deductGambleStake(table.stake);
-    if (!paid.ok) {
-      toast("🎲", "현금 부족", "보유 현금이 바이인보다 적습니다.");
-      return;
-    }
     worldSync.gambleBusy = true;
+    let paid = null;
     const now = Date.now();
     const seat = {
       id: state.playerId,
@@ -1632,6 +1774,19 @@
       joinedAt: now,
     };
     try {
+      const daily = await claimDailyGamble(tableId);
+      if (!daily.ok) {
+        toast("🎲", daily.err === "daily" ? "오늘 참여 완료" : "확인 실패", daily.err === "daily"
+          ? "몰빵데스크는 한 사람당 하루에 한 번만 참여할 수 있습니다."
+          : "하루 참여 기록을 확인하지 못했습니다. 잠시 후 다시 시도하세요.");
+        return;
+      }
+      paid = deductGambleStake(table.stake);
+      if (!paid.ok) {
+        await releaseDailyGambleClaim(tableId);
+        toast("🎲", "현금 부족", "보유 현금이 바이인보다 적습니다.");
+        return;
+      }
       const nextSeats = { ...(table.seats || {}), [safeFbKey(state.playerId)]: seat };
       const ok = await patchGambleTable(tableId, { seats: nextSeats, updatedAt: now });
       if (!ok) throw new Error("patch");
@@ -1641,7 +1796,8 @@
       toast("🎲", "참가", "주사위 데스크에 앉았습니다. 방장이 시작하면 입장 마감됩니다.");
       renderGambleModal();
     } catch {
-      refundGambleStake(table.stake);
+      if (paid?.ok) refundGambleStake(table.stake);
+      await releaseDailyGambleClaim(tableId);
       toast("🎲", "참가 실패", "다시 시도해 주세요.");
     } finally {
       worldSync.gambleBusy = false;
