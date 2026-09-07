@@ -343,6 +343,7 @@
   ];
 
   const PLAYS = [
+    { id: "recharge", name: "집중력 회복 시험", icon: "🔋", energy: 0, game: "memory", reward: "energy", copy: "빠르게 지나가는 6칸 순서를 전부 맞히면 에너지 1을 회복합니다. 이번 주 한 번만 도전할 수 있습니다." },
     { id: "type", name: "타이핑 질주", icon: "⌨️", energy: 1, game: "typing", reward: "cash", copy: "빠르고 정확하게 치면 용돈이 들어옵니다." },
     { id: "time", name: "타이밍 바", icon: "🎯", energy: 1, game: "timing", reward: "cash", copy: "바늘이 초록에 있을 때 클릭하세요." },
     { id: "memo", name: "기억 카드", icon: "🧠", energy: 1, game: "memory", reward: "research", copy: "순서를 맞히면 리서치 포인트를 얻습니다." },
@@ -6068,10 +6069,20 @@
     if (Array.isArray(row.weekPlayIds) && row.weekPlayIds.length) {
       state.weekPlays = row.weekPlayIds.map((id) => playsById[id]).filter(Boolean);
     }
+    const recharge = playsById.recharge;
+    if (recharge && !state.weekPlays.some((item) => item.id === recharge.id)) {
+      state.weekPlays = [recharge, ...state.weekPlays.filter((item) => item.id !== recharge.id).slice(0, 4)];
+    }
     if (typeof row.adDone === "boolean") state.adDone = row.adDone;
     if (Array.isArray(row.analyzed)) state.analyzed = new Set(row.analyzed);
     if (row.intel && typeof row.intel === "object") state.intel = row.intel;
     return true;
+  }
+
+  function pickWeeklyPlays() {
+    const recharge = PLAYS.find((item) => item.id === "recharge");
+    const others = shuffled(PLAYS.filter((item) => item.id !== "recharge"));
+    return recharge ? [recharge, ...others.slice(0, 4)] : others.slice(0, 5);
   }
 
   function resetLocalWeek() {
@@ -6082,7 +6093,7 @@
     state.playDone = new Set();
     state.energy = state.energyMax;
     state.weekJobs = shuffled(JOBS).slice(0, 4);
-    state.weekPlays = shuffled(PLAYS).slice(0, 5);
+    state.weekPlays = pickWeeklyPlays();
     state.adDone = false;
     state.locked = false;
   }
@@ -6090,7 +6101,7 @@
   function startWeekActivities(fresh = false) {
     if (!fresh && applyWeekActivity(readWallet(state.playerId))) {
       if (!state.weekJobs.length) state.weekJobs = shuffled(JOBS).slice(0, 4);
-      if (!state.weekPlays.length) state.weekPlays = shuffled(PLAYS).slice(0, 5);
+      if (!state.weekPlays.length) state.weekPlays = pickWeeklyPlays();
       writeWallet();
       return;
     }
@@ -6906,13 +6917,16 @@
 
     els.playPanel.innerHTML = (state.weekPlays || PLAYS).map((item) => {
       const done = state.playDone.has(item.id);
-      const disabled = busy || done || state.energy < item.energy;
+      const energyFull = item.reward === "energy" && state.energy >= state.energyMax;
+      const disabled = busy || done || energyFull || state.energy < item.energy;
+      const costLabel = item.reward === "energy" ? "에너지 0 · 주 1회" : `에너지 ${item.energy}`;
+      const rewardLabel = item.reward === "cash" ? "용돈" : item.reward === "research" ? "리서치" : item.reward === "energy" ? "에너지 +1" : "힌트";
       return `
         <article class="job-card ${done ? "done" : ""}">
-          <header><span class="job-icon">${item.icon}</span><div><b>${item.name}</b><small>에너지 ${item.energy}</small></div></header>
+          <header><span class="job-icon">${item.icon}</span><div><b>${item.name}</b><small>${costLabel}</small></div></header>
           <p>${item.copy}</p>
-          <div class="job-meta"><span>${item.reward === "cash" ? "용돈" : item.reward === "research" ? "리서치" : "힌트"}</span><em>${done ? "플레이함" : "미니게임"}</em></div>
-          <button type="button" data-kind="play" data-id="${item.id}" ${disabled ? "disabled" : ""}>${done ? "이번 주 완료" : "플레이"}</button>
+          <div class="job-meta"><span>${rewardLabel}</span><em>${done ? "도전 완료" : item.reward === "energy" ? "고난도 미션" : "미니게임"}</em></div>
+          <button type="button" data-kind="play" data-id="${item.id}" ${disabled ? "disabled" : ""}>${done ? "이번 주 완료" : energyFull ? "에너지 가득" : "도전"}</button>
         </article>
       `;
     }).join("");
@@ -6989,12 +7003,22 @@
         } else {
           toast("🧠", "아쉬운 기억", "포인트는 못 얻었지만 경험은 남았습니다.");
         }
+      } else if (spec.reward === "energy") {
+        if (score >= .9) {
+          const before = state.energy;
+          state.energy = Math.min(state.energyMax, state.energy + 1);
+          const gained = state.energy - before;
+          toast("🔋", gained > 0 ? "에너지 +1" : "에너지 가득", gained > 0 ? "집중력 회복에 성공했습니다." : "이미 에너지가 가득합니다.");
+        } else {
+          toast("🔋", "회복 실패", "6칸을 전부 맞혀야 합니다. 다음 주에 다시 도전하세요.");
+        }
       } else if (score >= .6) {
         grantIntel({ accuracy: .8 + score * .1, scope: score >= .85 ? "precise" : "one", icon: "🕵️" });
       } else {
         toast("❓", "힌트 실패", "정보를 열어내지 못했습니다.");
       }
-      tone(score >= .6 ? 640 : 180, .12, score >= .6 ? "square" : "sawtooth");
+      const rewardPassed = spec.reward === "energy" ? score >= .9 : score >= .6;
+      tone(rewardPassed ? 640 : 180, .12, rewardPassed ? "square" : "sawtooth");
       checkMissions();
       checkBadges();
       renderAll();
@@ -7072,7 +7096,8 @@
 
   function renderMemory(spec) {
     const pool = ["🔵", "🔴", "🟡", "🟢", "🟣", "🟠", "⚪", "⬛"];
-    const seq = Array.from({ length: 5 }, () => pool[Math.floor(random() * pool.length)]);
+    const hard = spec.reward === "energy";
+    const seq = Array.from({ length: hard ? 6 : 5 }, () => pool[Math.floor(random() * pool.length)]);
     els.playStage.innerHTML = `
       <span class="overline">MINI GAME</span>
       <h2 id="play-title">${spec.title}</h2>
@@ -7088,9 +7113,9 @@
       for (const icon of seq) {
         const cell = cells[pool.indexOf(icon)];
         cell.classList.add("lit");
-        await new Promise((resolve) => setTimeout(resolve, 420));
+        await new Promise((resolve) => setTimeout(resolve, hard ? 330 : 420));
         cell.classList.remove("lit");
-        await new Promise((resolve) => setTimeout(resolve, 160));
+        await new Promise((resolve) => setTimeout(resolve, hard ? 100 : 160));
       }
       showing = false;
       $("#memory-status").textContent = "같은 순서로 누르세요";
