@@ -3670,10 +3670,9 @@
     const currentPrice = Number(asset.price);
     if (!(currentPrice > 0)) return null;
     const signedQty = side === "buy" ? qty : -qty;
-    const live = isSchoolListing(asset);
-    const impact = live ? flowImpact(asset, signedQty) : 0;
-    const fillPrice = Math.max(5, round1(currentPrice * (1 + impact)));
-    if (live) asset.price = fillPrice;
+    // Settle at the visible quote. Order flow is accumulated for the weekly
+    // market move instead of changing the quote before cash is credited.
+    const fillPrice = quotePrice(asset);
     asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
     asset.clientBuild = CLIENT_BUILD;
     return { asset, fillPrice };
@@ -3731,13 +3730,15 @@
       Object.assign(asset, result.asset);
       pushTick(asset, quotePrice(asset));
       const holding = ensureHolding(state.holdings, assetId);
-      const fillPrice = isSchoolListing(asset) ? quotePrice(asset) : result.fillPrice;
+      const fillPrice = result.fillPrice;
       const total = round1(fillPrice * qty);
+      let realizedProfit = 0;
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
         state.cash = round1(state.cash - total);
       } else {
+        realizedProfit = round1((fillPrice - holding.avg) * qty);
         if (fillPrice > holding.avg) state.profitableSales += 1;
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
@@ -3753,6 +3754,7 @@
         total,
         holdingQty: holding.qty,
         cash: state.cash,
+        realizedProfit,
       };
     } catch {
       noteWorldError();
@@ -6239,7 +6241,7 @@
 
   function forecastFor(asset) {
     const info = state.intel[asset.id];
-    if (info) return { text: info.text, type: info.type || "hidden-info" };
+    if (info) return { text: info.source ? `[${info.source}] ${info.text}` : info.text, type: info.type || "hidden-info" };
     return { text: "미확인", type: "hidden-info" };
   }
 
@@ -6789,7 +6791,7 @@
     try {
       const result = await executeSharedTrade(id, "sell", qty);
       if (result.ok) {
-        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · ${money(result.total)} · 보유 ${result.holdingQty}주`);
+        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · ${money(result.total)} · 실현손익 ${signedMoney(result.realizedProfit)} · 보유 ${result.holdingQty}주`);
         return;
       }
       const message = result.err === "network"
@@ -6821,7 +6823,7 @@
     state.analyses += 1;
     state.analyzed.add(id);
     const asset = assetById(id);
-    const info = setIntel(id, random() < .9, true);
+    const info = setIntel(id, random() < .9, true, "정밀 분석");
     toast("🔎", "정밀 분석 완료", `${asset.name} · ${info.text} · 오차 있음`);
     tone(650, .1);
     checkMissions();
@@ -6838,7 +6840,7 @@
     return { word: "혼조", type: "" };
   }
 
-  function setIntel(assetId, truthful, precise) {
+  function setIntel(assetId, truthful, precise, source = "") {
     const actual = state.changes[assetId] != null
       ? state.changes[assetId]
       : ((assetById(assetId)?.weekFlow || 0) / Math.max(40, assetById(assetId)?.float || 400)) * 0.4;
@@ -6850,30 +6852,35 @@
       const lo = mid - .02;
       const hi = mid + .02;
       const type = mid > .008 ? "up" : mid < -.008 ? "down" : "";
-      state.intel[assetId] = { text: `예상 ${percent(lo)} ~ ${percent(hi)}`, type, name: asset.name };
+      state.intel[assetId] = { text: `예상 ${percent(lo)} ~ ${percent(hi)}`, type, name: asset.name, source };
     } else {
       const dir = directionOf(used);
-      state.intel[assetId] = { text: dir.word, type: dir.type, name: asset.name };
+      state.intel[assetId] = { text: dir.word, type: dir.type, name: asset.name, source };
     }
     return state.intel[assetId];
   }
 
   function pickIntelTarget() {
-    const ranked = strongestAssets(4);
-    return ranked[Math.floor(random() * Math.min(2, ranked.length))] || state.assets[0];
+    const ranked = strongestAssets(state.assets.length);
+    const revealedIds = new Set(Object.keys(state.intel || {}));
+    const revealedSectors = new Set([...revealedIds].map((id) => assetById(id)?.sectorKey).filter(Boolean));
+    const newSector = ranked.filter((asset) => !revealedIds.has(asset.id) && !revealedSectors.has(asset.sectorKey));
+    const newAsset = ranked.filter((asset) => !revealedIds.has(asset.id));
+    const pool = newSector.length ? newSector : newAsset.length ? newAsset : ranked;
+    return pool[Math.floor(random() * Math.min(3, pool.length))] || state.assets[0];
   }
 
   function grantIntel(spec, forcedAsset) {
     const truthful = random() < spec.accuracy;
     if (spec.scope === "sector") {
       const target = pickIntelTarget();
-      const info = setIntel(target.id, truthful, false);
-      toast(spec.icon || "📂", "업종 브리핑", `${target.sector.split(" · ")[0]} 쪽이 ${info.text}`);
+      const info = setIntel(target.id, truthful, false, spec.name || "업종 브리핑");
+      toast(spec.icon || "📂", spec.name || "업종 브리핑", `${target.sector.split(" · ")[0]} 쪽이 ${info.text}`);
       return info;
     }
     const target = forcedAsset || pickIntelTarget();
-    const info = setIntel(target.id, truthful, spec.scope === "precise");
-    toast(spec.icon || "🔎", "정보 입수", `${target.name} · ${info.text}`);
+    const info = setIntel(target.id, truthful, spec.scope === "precise", spec.name || "정보 입수");
+    toast(spec.icon || "🔎", spec.name || "정보 입수", `${target.name} · ${info.text}`);
     return info;
   }
 
@@ -7061,7 +7068,7 @@
           toast("🔋", "회복 실패", `${spec.failCopy || "시험을 통과해야 합니다."} 다음 주에 다시 도전하세요.`);
         }
       } else if (score >= .6) {
-        grantIntel({ accuracy: .8 + score * .1, scope: score >= .85 ? "precise" : "one", icon: "🕵️" });
+        grantIntel({ accuracy: .8 + score * .1, scope: score >= .85 ? "precise" : "one", icon: "🕵️", name: spec.title });
       } else {
         toast("❓", "힌트 실패", "정보를 열어내지 못했습니다.");
       }
