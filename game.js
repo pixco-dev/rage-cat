@@ -3091,16 +3091,24 @@
     writeAccounts(accounts);
   }
 
-  async function fetchRemoteAccount(id) {
-    try {
-      const response = await firebaseRestRequest(`${ACCOUNT_PATH}/${safeFbKey(id)}`, {}, FIREBASE_WRITE_TIMEOUT_MS);
-      if (!response.ok) return null;
-      const row = await response.json();
-      if (!row || typeof row !== "object" || !row.hash || !row.salt) return null;
-      return { ...row, id: row.id || id };
-    } catch {
-      return null;
+  async function fetchRemoteAccountState(id) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await firebaseRestRequest(`${ACCOUNT_PATH}/${safeFbKey(id)}`, {}, FIREBASE_WRITE_TIMEOUT_MS);
+        if (response.ok) {
+          const row = await response.json();
+          if (row == null) return { status: "missing", account: null };
+          if (typeof row !== "object" || !row.hash || !row.salt) {
+            return { status: "invalid", account: null };
+          }
+          return { status: "ok", account: { ...row, id: row.id || id } };
+        }
+      } catch {
+        /* retry once so a short network hiccup does not reject valid credentials */
+      }
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 180));
     }
+    return { status: "unavailable", account: null };
   }
 
   async function handleExists(id) {
@@ -3203,9 +3211,13 @@
         showAuthError("이 기기에서는 계정을 2개까지만 만들 수 있습니다. 이미 만든 아이디로 로그인하세요.");
         return;
       }
-      const taken = await fetchRemoteAccount(id);
-      if (taken) {
+      const remoteState = await fetchRemoteAccountState(id);
+      if (remoteState.status === "ok") {
         showAuthError("이미 다른 투자자가 사용 중인 아이디입니다. 로그인하세요.");
+        return;
+      }
+      if (remoteState.status !== "missing") {
+        showAuthError("계정 서버를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.");
         return;
       }
       const reserved = await reserveGlobalHandle(id, nick);
@@ -3230,20 +3242,48 @@
       }
       const hashed = await hashPassword(password);
       const created = Date.now();
-      accounts[id] = { id, nick, salt: hashed.salt, hash: hashed.hash, created };
-      writeAccounts(accounts);
+      let published = await publishRemoteAccount(id, nick, hashed, created);
+      if (!published) {
+        const confirmation = await fetchRemoteAccountState(id);
+        if (confirmation.status === "ok") published = confirmation.account;
+        if (confirmation.status === "missing") await releaseGlobalHandle(id);
+      }
+      if (!published) {
+        showAuthError("계정 저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.");
+        return;
+      }
+      if (published.hash !== hashed.hash || published.salt !== hashed.salt) {
+        showAuthError("이미 다른 투자자가 사용 중인 아이디입니다. 로그인하세요.");
+        return;
+      }
+      saveLocalAccount(published);
       rememberDeviceAccount(id);
-      await publishRemoteAccount(id, nick, hashed, created);
-      writeSession({ id, nick });
+      writeSession({ id, nick: published.nick || nick });
       seedNewWallet(id);
     } else {
-      let row = accounts[id];
-      if (!row) {
-        const remote = await fetchRemoteAccount(id);
-        if (!remote) {
+      const local = accounts[id];
+      const remoteState = await fetchRemoteAccountState(id);
+      if (remoteState.status === "unavailable") {
+        showAuthError("계정 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      if (remoteState.status === "invalid") {
+        showAuthError("계정 정보가 손상되었습니다. 관리자에게 문의해 주세요.");
+        return;
+      }
+      if (remoteState.status === "ok") {
+        const remote = remoteState.account;
+        if (!(await verifyPassword(remote, password))) {
+          showAuthError("비밀번호가 맞지 않습니다.");
+          return;
+        }
+        saveLocalAccount(remote);
+        writeSession({ id, nick: remote.nick || id });
+      } else {
+        if (!local) {
           const exists = await handleExists(id);
           if (exists) {
-            showAuthError("이 아이디는 처음 만든 폰에서 한 번 로그인해야 다른 기기에서도 쓸 수 있습니다.");
+            showAuthError("가입이 끝까지 저장되지 않은 아이디입니다. 처음 가입한 기기에서 다시 로그인해 주세요.");
             return;
           }
           if (exists === null) {
@@ -3253,19 +3293,22 @@
           showAuthError("계정을 찾을 수 없습니다. 회원가입을 먼저 하세요.");
           return;
         }
-        if (!(await verifyPassword(remote, password))) {
+        if (!(await verifyPassword(local, password))) {
           showAuthError("비밀번호가 맞지 않습니다.");
           return;
         }
-        saveLocalAccount(remote);
-        writeSession({ id, nick: remote.nick || id });
-      } else {
-        if (!(await verifyPassword(row, password))) {
-          showAuthError("비밀번호가 맞지 않습니다.");
+        const restored = await publishRemoteAccount(
+          id,
+          local.nick || id,
+          { salt: local.salt, hash: local.hash },
+          local.created,
+        );
+        if (!restored || restored.hash !== local.hash || restored.salt !== local.salt) {
+          showAuthError("계정 동기화에 실패했습니다. 잠시 후 다시 시도해 주세요.");
           return;
         }
-        writeSession({ id, nick: row.nick || id });
-        publishRemoteAccount(id, row.nick || id, { salt: row.salt, hash: row.hash }, row.created).catch(() => {});
+        saveLocalAccount(restored);
+        writeSession({ id, nick: restored.nick || id });
       }
     }
     await fetchBans();
