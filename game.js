@@ -36,7 +36,11 @@
   const AI_QUOTE_BUCKET_MS = 20000;
   const TRADE_FEE_RATE = .005;
   const CORE_POSITION_LIMIT_RATE = .25;
-  const COMPANY_POSITION_LIMIT_RATE = .15;
+  const COMPANY_POSITION_LIMIT_RATE = .05;
+  const COMPANY_FOUNDER_FLOAT_RATE = .15;
+  const COMPANY_MAX_ORDER_RATE = .02;
+  const COMPANY_DAILY_BUY_RATE = .05;
+  const COMPANY_TRADE_COOLDOWN_MS = 10000;
   const COMPANY_SPREAD_RATE = .025;
   const COMPANY_QUICK_FLIP_MS = 10 * 60 * 1000;
   const COMPANY_QUICK_FLIP_TAX_RATE = .8;
@@ -907,6 +911,7 @@
     climate: 0,
     climateUnsub: null,
     tradeLockUntil: 0,
+    companyTradeLockUntil: 0,
     gambleTables: {},
     gambleUnsub: null,
     gambleBusy: false,
@@ -3528,10 +3533,16 @@
       const rawQty = Number(holdings[id]?.qty);
       const rawAvg = Number(holdings[id]?.avg);
       const rawBoughtAt = Number(holdings[id]?.boughtAt);
+      const companyBuyDay = String(holdings[id]?.companyBuyDay || "");
+      const companyBuyQty = Math.max(0, Math.floor(Number(holdings[id]?.companyBuyQty) || 0));
       const qty = Number.isFinite(rawQty) ? Math.min(MAX_STORED_QTY, Math.max(0, Math.floor(rawQty))) : 0;
       const avg = qty > 0 && Number.isFinite(rawAvg) ? Math.min(WEALTH_SANITY, Math.max(0, rawAvg)) : 0;
       out[id] = { qty, avg };
       if (qty > 0 && Number.isFinite(rawBoughtAt) && rawBoughtAt > 0) out[id].boughtAt = rawBoughtAt;
+      if (companyBuyDay) {
+        out[id].companyBuyDay = companyBuyDay;
+        out[id].companyBuyQty = Math.min(MAX_STORED_QTY, companyBuyQty);
+      }
     });
     return out;
   }
@@ -3834,7 +3845,7 @@
     const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
     const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.65 : 1);
     const volatility = isSchoolListing(asset) ? DEFAULT_VOLATILITY : volatilityProfile(asset);
-    const flowScale = isSchoolListing(asset) ? .01 : volatility.chartFlowScale;
+    const flowScale = isSchoolListing(asset) ? .002 : volatility.chartFlowScale;
     const noiseGain = isSchoolListing(asset) ? .055 : volatility.chartNoiseGain;
     const climateScale = isSchoolListing(asset) ? .0011 : volatility.chartClimate;
     const botScale = isSchoolListing(asset) ? .4 : volatility.chartBotScale;
@@ -3935,10 +3946,13 @@
     return round1(gross * multiplier);
   }
 
-  function tradeFillPrice(asset, side) {
+  function tradeFillPrice(asset, side, qty = 0) {
     const quote = quotePrice(asset);
     if (!isSchoolListing(asset)) return quote;
-    const spread = side === "buy" ? 1 + COMPANY_SPREAD_RATE : 1 - COMPANY_SPREAD_RATE;
+    const float = Math.max(40, Number(asset?.float) || 400);
+    const sizePenalty = Math.min(.055, (Math.max(0, Number(qty) || 0) / float) * 1.4);
+    const spreadRate = COMPANY_SPREAD_RATE + sizePenalty;
+    const spread = side === "buy" ? 1 + spreadRate : 1 - spreadRate;
     return Math.max(5, round1(quote * spread));
   }
 
@@ -3954,9 +3968,44 @@
     return round1(profit * COMPANY_QUICK_FLIP_TAX_RATE);
   }
 
+  function maxCompanyOrderQty(asset) {
+    return Math.max(1, Math.floor(Math.max(40, Number(asset?.float) || 400) * COMPANY_MAX_ORDER_RATE));
+  }
+
+  function companyDailyBuyRoom(asset, holding) {
+    if (!isSchoolListing(asset)) return Infinity;
+    const cap = Math.max(1, Math.floor(Math.max(40, Number(asset?.float) || 400) * COMPANY_DAILY_BUY_RATE));
+    const today = gambleDayKey();
+    const used = holding?.companyBuyDay === today ? Math.max(0, Math.floor(Number(holding.companyBuyQty) || 0)) : 0;
+    return Math.max(0, cap - used);
+  }
+
+  function recordCompanyBuy(asset, holding, qty) {
+    if (!isSchoolListing(asset) || !holding) return;
+    const today = gambleDayKey();
+    if (holding.companyBuyDay !== today) {
+      holding.companyBuyDay = today;
+      holding.companyBuyQty = 0;
+    }
+    holding.companyBuyQty = Math.max(0, Math.floor(Number(holding.companyBuyQty) || 0)) + qty;
+  }
+
   function maxPositionQty(asset) {
     const rate = isSchoolListing(asset) ? COMPANY_POSITION_LIMIT_RATE : CORE_POSITION_LIMIT_RATE;
     return Math.max(1, Math.floor(Math.max(40, Number(asset?.float) || 400) * rate));
+  }
+
+  function maxBuyQty(asset, holding, cash = state?.cash) {
+    const positionRoom = Math.max(0, maxPositionQty(asset) - (Number(holding?.qty) || 0));
+    if (!(positionRoom > 0) || isRelatedAccountCompany(asset)) return 0;
+    if (!isSchoolListing(asset)) {
+      return Math.min(positionRoom, Math.floor((Number(cash) || 0) / Math.max(1, tradeFillPrice(asset, "buy") * (1 + TRADE_FEE_RATE))));
+    }
+    const ruleCap = Math.min(positionRoom, maxCompanyOrderQty(asset), companyDailyBuyRoom(asset, holding));
+    for (let qty = ruleCap; qty >= 1; qty -= 1) {
+      if (tradeTotal(tradeFillPrice(asset, "buy", qty), qty, "buy") <= (Number(cash) || 0) + 1e-9) return qty;
+    }
+    return 0;
   }
 
   function capitalGainsTaxRate(wealth = totalAssets()) {
@@ -4055,15 +4104,21 @@
     if (!actor || !asset || qty < 1 || !state.active) return { ok: false, err: "locked" };
     if (actor.isLocal && Date.now() < (worldSync.tradeLockUntil || 0)) return { ok: false, err: "busy" };
     const holding = ensureHolding(actor.holdings, assetId);
+    if (actor.isLocal && isSchoolListing(asset) && Date.now() < (worldSync.companyTradeLockUntil || 0)) return { ok: false, err: "cooldown" };
+    if (side === "buy" && isSchoolListing(asset) && qty > maxCompanyOrderQty(asset)) return { ok: false, err: "order-limit" };
+    if (side === "buy" && isSchoolListing(asset) && qty > companyDailyBuyRoom(asset, holding)) return { ok: false, err: "daily-limit" };
     const signedQty = side === "buy" ? qty : -qty;
-    const px = tradeFillPrice(asset, side);
+    const px = tradeFillPrice(asset, side, qty);
     if (side === "buy") {
       if (holding.qty + qty > maxPositionQty(asset)) return { ok: false, err: "limit" };
       const cost = tradeTotal(px, qty, side);
       if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
       holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
       holding.qty += qty;
-      if (isSchoolListing(asset)) holding.boughtAt = Date.now();
+      if (isSchoolListing(asset)) {
+        holding.boughtAt = Date.now();
+        recordCompanyBuy(asset, holding, qty);
+      }
       actor.cash = round1(actor.cash - cost);
       applyFlow(asset, qty);
       if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
@@ -4089,6 +4144,7 @@
       if (actor.isLocal && !options.silent) recordTrade("sell", asset, qty, proceeds);
     }
     if (actor.isLocal) worldSync.tradeLockUntil = Date.now() + 320;
+    if (actor.isLocal && isSchoolListing(asset)) worldSync.companyTradeLockUntil = Date.now() + COMPANY_TRADE_COOLDOWN_MS;
     syncLocalPlayer();
     writeWallet();
     if (state.active) markTouched(assetId);
@@ -4104,7 +4160,7 @@
     const signedQty = side === "buy" ? qty : -qty;
     // Settle at the visible quote. Order flow is accumulated for the weekly
     // market move instead of changing the quote before cash is credited.
-    const fillPrice = tradeFillPrice(asset, side);
+    const fillPrice = tradeFillPrice(asset, side, qty);
     asset.weekFlow = (Number(asset.weekFlow) || 0) + signedQty;
     asset.clientBuild = CLIENT_BUILD;
     return { asset, fillPrice };
@@ -4153,7 +4209,10 @@
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
     if (side === "buy" && isRelatedAccountCompany(localAsset)) return { ok: false, err: "related" };
-    if (side === "buy" && tradeTotal(tradeFillPrice(localAsset, side), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (isSchoolListing(localAsset) && Date.now() < (worldSync.companyTradeLockUntil || 0)) return { ok: false, err: "cooldown" };
+    if (side === "buy" && isSchoolListing(localAsset) && qty > maxCompanyOrderQty(localAsset)) return { ok: false, err: "order-limit" };
+    if (side === "buy" && isSchoolListing(localAsset) && qty > companyDailyBuyRoom(localAsset, localHolding)) return { ok: false, err: "daily-limit" };
+    if (side === "buy" && tradeTotal(tradeFillPrice(localAsset, side, qty), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
     if (side === "buy" && localHolding.qty + qty > maxPositionQty(localAsset)) return { ok: false, err: "limit" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
     if (worldSync.tradeBusy || worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
@@ -4176,7 +4235,10 @@
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
-        if (isSchoolListing(asset)) holding.boughtAt = Date.now();
+        if (isSchoolListing(asset)) {
+          holding.boughtAt = Date.now();
+          recordCompanyBuy(asset, holding, qty);
+        }
         state.cash = round1(state.cash - total);
       } else {
         const gainBeforeTax = round1(total - holding.avg * qty);
@@ -4193,6 +4255,7 @@
           holding.boughtAt = 0;
         }
       }
+      if (isSchoolListing(asset)) worldSync.companyTradeLockUntil = Date.now() + COMPANY_TRADE_COOLDOWN_MS;
       worldSync.online = true;
       recordTrade(side, asset, qty, total);
       queuePush();
@@ -4326,7 +4389,7 @@
       risk: 4,
       color: PLAYER_COLORS[state.assets.length % PLAYER_COLORS.length],
       dividend: sectorKey === "retail" || sectorKey === "gold" ? 0.006 : 0,
-      float: Math.max(90, Math.ceil(founderQty / COMPANY_POSITION_LIMIT_RATE)),
+      float: Math.max(90, Math.ceil(founderQty / COMPANY_FOUNDER_FLOAT_RATE)),
       weekFlow: 0,
       lastFlow: 0,
       weekOpen: price,
@@ -6977,12 +7040,17 @@
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
-    const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
     const related = isRelatedAccountCompany(asset);
-    const maxBuy = related ? 0 : Math.min(positionRoom, Math.floor(state.cash / Math.max(1, tradeFillPrice(asset, "buy") * (1 + TRADE_FEE_RATE))));
+    const maxBuy = maxBuyQty(asset, holding);
+    const dailyBlocked = isSchoolListing(asset) && companyDailyBuyRoom(asset, holding) < 1;
+    const buyBlockTitle = related
+      ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다"
+      : dailyBlocked
+        ? "오늘 이 학생 회사의 매수 한도를 모두 사용했습니다"
+        : "현금 또는 종목별 보유 한도를 확인하세요";
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell"), holding.qty, "sell") - holding.avg * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell", holding.qty), holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const founder = asset.playerCompany ? `<span class="founder-tag">${esc(asset.founderId === state.playerId ? "내 회사" : (asset.founderName || "창업"))} 상장</span>` : `<span class="core-tag">기본 종목</span>`;
     const adMark = asset.ad && asset.ad.week === state.week ? `<span class="ad-badge">AD ${esc(asset.ad.slogan)}</span>` : "";
@@ -7022,7 +7090,7 @@
             <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
           </div>
           <div class="trade-actions">
-            <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""} ${maxBuy < 1 ? `title="${related ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다" : "현금 또는 종목별 보유 한도를 확인하세요"}"` : ""}>매수</button>
+            <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""} ${maxBuy < 1 ? `title="${buyBlockTitle}"` : ""}>매수</button>
             <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
           </div>
         </div>
@@ -7035,12 +7103,17 @@
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
-    const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
     const related = isRelatedAccountCompany(asset);
-    const maxBuy = related ? 0 : Math.min(positionRoom, Math.floor(state.cash / Math.max(1, tradeFillPrice(asset, "buy") * (1 + TRADE_FEE_RATE))));
+    const maxBuy = maxBuyQty(asset, holding);
+    const dailyBlocked = isSchoolListing(asset) && companyDailyBuyRoom(asset, holding) < 1;
+    const buyBlockTitle = related
+      ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다"
+      : dailyBlocked
+        ? "오늘 이 학생 회사의 매수 한도를 모두 사용했습니다"
+        : "현금 또는 종목별 보유 한도를 확인하세요";
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
-    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell"), holding.qty, "sell") - holding.avg * holding.qty : 0;
+    const positionProfit = holding.qty > 0 ? tradeTotal(tradeFillPrice(asset, "sell", holding.qty), holding.qty, "sell") - holding.avg * holding.qty : 0;
     const flow = flowHint(asset);
     const last = row.querySelector(".asset-last");
     if (last) last.textContent = money(quote);
@@ -7078,7 +7151,7 @@
     if (buyBtn && buyBtn.getAttribute("aria-busy") !== "true") {
       buyBtn.disabled = disabled || maxBuy < 1;
       buyBtn.textContent = "매수";
-      if (maxBuy < 1) buyBtn.setAttribute("title", related ? "같은 기기에서 사용한 계정의 회사는 매수할 수 없습니다" : "현금 또는 종목별 보유 한도를 확인하세요");
+      if (maxBuy < 1) buyBtn.setAttribute("title", buyBlockTitle);
       else buyBtn.removeAttribute("title");
     }
     const sellBtn = row.querySelector("[data-action='sell']");
@@ -7378,8 +7451,14 @@
             ? "현금이 부족합니다. 수량을 줄여 주세요."
             : result.err === "related"
               ? "같은 기기에서 사용한 다른 계정의 회사는 매수할 수 없습니다."
+            : result.err === "cooldown"
+              ? "학생 회사는 주문 후 10초가 지나야 다시 주문할 수 있습니다."
+            : result.err === "order-limit"
+              ? "학생 회사는 한 번에 유통주식의 2%까지만 매수할 수 있습니다."
+            : result.err === "daily-limit"
+              ? "오늘 이 학생 회사의 매수 한도 5%를 모두 사용했습니다."
             : result.err === "limit"
-              ? "한 종목은 유통주식의 25%(학생 회사 15%)까지만 보유할 수 있습니다."
+              ? "한 종목은 유통주식의 25%(학생 회사 5%)까지만 보유할 수 있습니다."
             : "시장 입장 상태와 주문 수량을 확인하세요.";
       toast("⚠️", "매수 실패", message);
       tone(130, .12, "sawtooth");
@@ -7405,6 +7484,8 @@
         ? "공유 주문 서버가 응답하지 않았습니다. 잠시 후 다시 눌러 주세요."
         : result.err === "pending"
           ? "같은 종목의 이전 주문을 처리하고 있습니다."
+        : result.err === "cooldown"
+          ? "학생 회사는 주문 후 10초가 지나야 다시 주문할 수 있습니다."
           : "보유 수량을 확인하세요.";
       toast("⚠️", "매도 실패", message);
       tone(130, .12, "sawtooth");
