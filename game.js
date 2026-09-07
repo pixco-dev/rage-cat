@@ -13,7 +13,7 @@
   const MIN_LEND_RATE = 1;
   const MAX_LEND_RATE = 15;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
-  const CLIENT_BUILD = "20260904d";
+  const CLIENT_BUILD = "20260907lag1";
   const BAN_PATH = "bull-lab/bans";
   const HALT_PATH = "bull-lab/halt";
   const CLIMATE_PATH = "bull-lab/climate";
@@ -64,7 +64,9 @@
   const FIREBASE_WRITE_TIMEOUT_MS = 4500;
   const MAX_AD_IMAGE_DATA_LENGTH = 60000;
   const ACTIVITY_PASS_SCORE = 0.65;
-  const TICK_MS = 1000;
+  const CLOCK_TICK_MS = 5000;
+  const TICK_MS = 1800;
+  const REMOTE_RENDER_MS = 250;
   const TICK_CAP = 96;
   const LIVE_W = 640;
   const LIVE_H = 180;
@@ -842,6 +844,7 @@
     db: null,
     applyingRemote: false,
     unsub: null,
+    renderTimer: null,
     banUnsub: null,
     haltUnsub: null,
     climate: 0,
@@ -4236,6 +4239,7 @@
     if (worldSync.presenceTimer) clearInterval(worldSync.presenceTimer);
     if (worldSync.buildTimer) clearInterval(worldSync.buildTimer);
     if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
+    if (worldSync.renderTimer) clearTimeout(worldSync.renderTimer);
     worldSync.pollTimer = null;
     worldSync.clockTimer = null;
     worldSync.kstTimer = null;
@@ -4243,6 +4247,7 @@
     worldSync.presenceTimer = null;
     worldSync.buildTimer = null;
     worldSync.putTimer = null;
+    worldSync.renderTimer = null;
   }
 
   function kstNowMs() {
@@ -4824,6 +4829,14 @@
       : "Firebase 설정이 없습니다. firebase-config.js에 프로젝트 값을 넣어 주세요.");
   }
 
+  function scheduleRemoteRender() {
+    if (worldSync.renderTimer) return;
+    worldSync.renderTimer = setTimeout(() => {
+      worldSync.renderTimer = null;
+      if (state?.active) renderAll();
+    }, REMOTE_RENDER_MS);
+  }
+
   function applyRemoteWorld(remote, preferLocal) {
     if (!remote || !state?.active) return;
     worldSync.applyingRemote = true;
@@ -4839,7 +4852,7 @@
       }
       if (result.settled) showWeekResult(totalAssets() - before, totalAssets(), 0);
       ensureCoreListings();
-      renderAll();
+      scheduleRemoteRender();
     } finally {
       worldSync.applyingRemote = false;
     }
@@ -5241,7 +5254,6 @@
     if (state?.active) {
       maybeSettleLottery();
       tryClaimLotteryWin();
-      renderRoom();
     }
   }
 
@@ -5252,11 +5264,13 @@
     subscribeHalt();
     subscribeClimate();
     startPresence();
-    worldSync.pollTimer = setInterval(pullWorld, POLL_MS);
-    worldSync.clockTimer = setInterval(() => { tickClock(); }, 1000);
+    worldSync.pollTimer = setInterval(() => {
+      if (!worldSync.connected && !document.hidden) pullWorld();
+    }, POLL_MS);
+    worldSync.clockTimer = setInterval(() => { tickClock(); }, CLOCK_TICK_MS);
     worldSync.kstTimer = setInterval(() => { refreshKst().then(() => tickClock()); }, KST_POLL_MS);
     worldSync.chartTimer = setInterval(() => {
-      if (!state?.active) return;
+      if (!state?.active || document.hidden) return;
       sampleLiveTicks();
       updateLiveCharts();
     }, TICK_MS);
@@ -5961,10 +5975,6 @@
       els.adButton.classList.toggle("is-off", off);
       els.adButton.setAttribute("aria-disabled", off ? "true" : "false");
     }
-    if (!isDeskEditing()) {
-      renderRanking();
-      renderChat();
-    }
   }
 
   function renderAds() {
@@ -6445,8 +6455,12 @@
 
   function updateLiveCharts() {
     if (!state?.assets) return;
+    const rows = new Map(
+      [...(els.assetList?.querySelectorAll(".asset-row") || [])]
+        .map((row) => [row.dataset.id, row]),
+    );
     liveCompanies().forEach((asset) => {
-      const row = [...(els.assetList?.querySelectorAll(".asset-row") || [])].find((item) => item.dataset.id === asset.id);
+      const row = rows.get(asset.id);
       if (!row) return;
       const values = ensureTicks(asset);
       const tone = tickToneClass(values);
