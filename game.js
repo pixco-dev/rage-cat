@@ -878,8 +878,8 @@
   }
 
   function kstInstantMs() {
-    if (!kstClock.ok) return null;
-    return kstClock.serverUtcMs + (Date.now() - kstClock.fetchedAt);
+    const ms = kstNowMs();
+    return Number.isFinite(ms) ? ms : null;
   }
 
   function kstParts() {
