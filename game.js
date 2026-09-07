@@ -96,10 +96,40 @@
     { id: "bio", symbol: "BIO", name: "새봄바이오", sector: "제약 · 헬스케어", sectorKey: "bio", price: 54, trend: .004, noise: .024, risk: 4, color: "#1f9d6a", dividend: 0, float: 360 },
     { id: "energy", symbol: "NRG", name: "태양에너지", sector: "에너지 · 인프라", sectorKey: "energy", price: 71, trend: .003, noise: .016, risk: 3, color: "#ef8c3f", dividend: .01, float: 400 },
     { id: "retail", symbol: "RTL", name: "모두리테일", sector: "소비재 · 유통", sectorKey: "retail", price: 39, trend: .002, noise: .012, risk: 2, color: "#8267d9", dividend: .008, float: 480 },
-    { id: "gold", symbol: "GLD", name: "금 현물 ETF", sector: "안전자산 · 원자재", sectorKey: "gold", price: 96, trend: .001, noise: .008, risk: 1, color: "#d6a52d", dividend: 0, float: 520 },
-    { id: "coin", symbol: "LBC", name: "럭키비트", sector: "가상자산 · 고위험", sectorKey: "coin", price: 24, trend: 0, noise: .038, risk: 5, color: "#ef5b6f", dividend: 0, float: 300 },
+    { id: "gold", symbol: "GLD", name: "금 현물 ETF", sector: "안전자산 · 원자재", sectorKey: "gold", price: 96, trend: .001, noise: .005, risk: 1, color: "#d6a52d", dividend: 0, float: 520 },
+    { id: "coin", symbol: "LBC", name: "럭키비트", sector: "가상자산 · 고위험", sectorKey: "coin", price: 24, trend: 0, noise: .06, risk: 5, color: "#ef5b6f", dividend: 0, float: 300 },
   ];
   const CORE_ASSET_IDS = ASSET_BLUEPRINTS.map((item) => item.id);
+  const DEFAULT_VOLATILITY = Object.freeze({
+    weeklyScale: 1, weeklyLimit: .28,
+    quoteClimate: .003, quoteFlowScale: .35, quoteLimit: .02,
+    chartFlowScale: .01, chartNoiseGain: .055, chartClimate: .0005,
+    chartBotScale: .2, chartBotLimit: .012, chartLimit: .018,
+    settlementFlowScale: 1, settlementClimateScale: 1, settlementLimit: null,
+    quietMoveBase: .004, quietMoveRange: .01,
+  });
+  const CORE_VOLATILITY = Object.freeze({
+    gold: Object.freeze({
+      weeklyScale: .5, weeklyLimit: .075,
+      quoteClimate: .001, quoteFlowScale: .14, quoteLimit: .005,
+      chartFlowScale: .004, chartNoiseGain: .03, chartClimate: .0002,
+      chartBotScale: .1, chartBotLimit: .004, chartLimit: .006,
+      settlementFlowScale: .3, settlementClimateScale: .3, settlementLimit: .08,
+      quietMoveBase: .001, quietMoveRange: .004,
+    }),
+    coin: Object.freeze({
+      weeklyScale: 1.35, weeklyLimit: .42,
+      quoteClimate: .006, quoteFlowScale: .75, quoteLimit: .04,
+      chartFlowScale: .016, chartNoiseGain: .16, chartClimate: .001,
+      chartBotScale: .7, chartBotLimit: .03, chartLimit: .035,
+      settlementFlowScale: 1.4, settlementClimateScale: 1.35, settlementLimit: .45,
+      quietMoveBase: .008, quietMoveRange: .02,
+    }),
+  });
+
+  function volatilityProfile(asset) {
+    return CORE_VOLATILITY[asset?.id] || DEFAULT_VOLATILITY;
+  }
 
   const SECTORS = [
     { key: "tech", label: "기술 · 반도체" },
@@ -3531,8 +3561,9 @@
       price *= (1 + climate * 0.007);
       price *= (1 + Math.max(-0.055, Math.min(0.055, flowImpact(asset, aiFlow))));
     } else {
-      price *= (1 + climate * 0.003);
-      price *= (1 + Math.max(-0.02, Math.min(0.02, flowImpact(asset, aiFlow) * .35)));
+      const volatility = volatilityProfile(asset);
+      price *= (1 + climate * volatility.quoteClimate);
+      price *= (1 + Math.max(-volatility.quoteLimit, Math.min(volatility.quoteLimit, flowImpact(asset, aiFlow) * volatility.quoteFlowScale)));
     }
     return Math.max(5, round1(price));
   }
@@ -3555,10 +3586,17 @@
     const unit = hashUnit(`${asset.id}:${sec}`) * 2 - 1;
     const flow = (asset.weekFlow || 0) / Math.max(40, asset.float || 400);
     const noise = (asset.noise || 0.01) * (asset.playerCompany ? 0.65 : 1);
-    const climate = climateTone() * (isSchoolListing(asset) ? 0.0011 : 0.0005);
-    const bots = Math.max(-0.012, Math.min(0.012, flowImpact(asset, botFlowFor(asset)) * (isSchoolListing(asset) ? .4 : .2)));
-    const wiggle = flow * 0.01 + unit * noise * 0.055 + climate + bots;
-    return Math.max(5, round1(asset.price * (1 + Math.max(-0.018, Math.min(0.018, wiggle)))));
+    const volatility = isSchoolListing(asset) ? DEFAULT_VOLATILITY : volatilityProfile(asset);
+    const flowScale = isSchoolListing(asset) ? .01 : volatility.chartFlowScale;
+    const noiseGain = isSchoolListing(asset) ? .055 : volatility.chartNoiseGain;
+    const climateScale = isSchoolListing(asset) ? .0011 : volatility.chartClimate;
+    const botScale = isSchoolListing(asset) ? .4 : volatility.chartBotScale;
+    const botLimit = isSchoolListing(asset) ? .012 : volatility.chartBotLimit;
+    const chartLimit = isSchoolListing(asset) ? .018 : volatility.chartLimit;
+    const climate = climateTone() * climateScale;
+    const bots = Math.max(-botLimit, Math.min(botLimit, flowImpact(asset, botFlowFor(asset)) * botScale));
+    const wiggle = flow * flowScale + unit * noise * noiseGain + climate + bots;
+    return Math.max(5, round1(asset.price * (1 + Math.max(-chartLimit, Math.min(chartLimit, wiggle)))));
   }
 
   function ensureTicks(asset) {
@@ -5188,11 +5226,17 @@
         creditFounderOps(asset);
       }
       const newsChange = state.changes[asset.id] || 0;
-      const flow = ((asset.weekFlow || 0) + botFlowFor(asset)) / Math.max(40, asset.float || 400) * (asset.playerCompany ? 0.2 : 0.3);
+      const volatility = asset.playerCompany ? DEFAULT_VOLATILITY : volatilityProfile(asset);
+      const flow = ((asset.weekFlow || 0) + botFlowFor(asset)) / Math.max(40, asset.float || 400)
+        * (asset.playerCompany ? 0.2 : 0.3) * volatility.settlementFlowScale;
       let extra = asset.playerCompany ? (asset.opsShock || 0) + newsChange : newsChange + flow;
-      extra += climateTone() * (asset.playerCompany ? 0.003 : 0.008);
+      extra += climateTone() * (asset.playerCompany ? 0.003 : 0.008) * volatility.settlementClimateScale;
       if (!asset.playerCompany && Math.abs(extra) < 0.003) {
-        extra = (extra >= 0 ? 1 : -1) * (0.004 + random() * 0.01);
+        const direction = extra === 0 ? (random() < .5 ? -1 : 1) : Math.sign(extra);
+        extra = direction * (volatility.quietMoveBase + random() * volatility.quietMoveRange);
+      }
+      if (!asset.playerCompany && Number.isFinite(volatility.settlementLimit)) {
+        extra = Math.max(-volatility.settlementLimit, Math.min(volatility.settlementLimit, extra));
       }
       asset.price = Math.max(5, round1(asset.price * (1 + extra)));
       if (asset.playerCompany) resolveAdTruth(asset);
@@ -6241,8 +6285,11 @@
       const momentum = (asset.lastChange || 0) * .08;
       const expected = eventEffect * newsWeight + (asset.trend || 0) + momentum;
       const noise = (random() * 2 - 1) * (asset.noise || 0.01) * (asset.playerCompany ? 0.45 : 1);
-      state.expected[asset.id] = expected;
-      state.changes[asset.id] = Math.max(-.28, Math.min(.28, expected + noise));
+      const volatility = asset.playerCompany ? DEFAULT_VOLATILITY : volatilityProfile(asset);
+      const scaledExpected = expected * volatility.weeklyScale;
+      const scaledChange = (expected + noise) * volatility.weeklyScale;
+      state.expected[asset.id] = scaledExpected;
+      state.changes[asset.id] = Math.max(-volatility.weeklyLimit, Math.min(volatility.weeklyLimit, scaledChange));
     });
     state.ads = state.assets.filter((asset) => asset.ad && asset.ad.week === state.week && asset.ad.season === state.season).map((asset) => ({
       assetId: asset.id,
