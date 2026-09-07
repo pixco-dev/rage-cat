@@ -19,7 +19,7 @@
         "$device": {
           ".validate": "newData.hasChildren(['createdAt', 'accounts']) && newData.child('createdAt').isNumber()",
           "accounts": {
-            ".validate": "newData.hasChildren() && newData.numChildren() <= 2",
+            ".validate": "newData.hasChildren()",
             "$id": {
               ".validate": "newData.hasChildren(['id', 'nick', 'createdAt']) && newData.child('id').isString() && newData.child('id').val() === $id && newData.child('nick').isString() && newData.child('nick').val().length <= 16 && newData.child('createdAt').isNumber()"
             }
