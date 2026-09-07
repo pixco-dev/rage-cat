@@ -64,7 +64,7 @@
         },
         "assets": {
           "$id": {
-            ".validate": "newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true && !root.child('bull-lab/world/closed').child($id).exists()"
+            ".validate": "newData.hasChildren(['id', 'price', 'float', 'weekFlow', 'clientBuild']) && newData.child('id').val() === $id && newData.child('price').isNumber() && newData.child('price').val() >= 5 && newData.child('price').val() <= 50000 && newData.child('float').isNumber() && newData.child('float').val() >= 40 && newData.child('float').val() <= 10000 && newData.child('weekFlow').isNumber() && newData.child('weekFlow').val() >= -10000 && newData.child('weekFlow').val() <= 10000 && newData.child('clientBuild').val() === '20260904d' && root.child('bull-lab/halt/stopped').val() !== true && !root.child('bull-lab/world/closed').child($id).exists()"
           }
         },
         "closed": {
@@ -74,7 +74,28 @@
         },
         "players": {
           "$id": {
-            ".validate": "newData.child('clientBuild').val() === '20260904d' && !root.child('bull-lab/bans').child($id).exists() && root.child('bull-lab/halt/stopped').val() !== true"
+            ".validate": "newData.hasChildren(['id', 'cash', 'clientBuild']) && newData.child('id').val() === $id && newData.child('cash').isNumber() && newData.child('cash').val() >= 0 && newData.child('cash').val() <= 1000000000 && newData.child('clientBuild').val() === '20260904d' && !root.child('bull-lab/bans').child($id).exists() && root.child('bull-lab/halt/stopped').val() !== true",
+            "holdings": {
+              "$asset": {
+                ".validate": "newData.hasChildren(['qty', 'avg']) && newData.child('qty').isNumber() && newData.child('qty').val() >= 0 && newData.child('qty').val() <= 10000 && newData.child('avg').isNumber() && newData.child('avg').val() >= 0 && newData.child('avg').val() <= 50000"
+              }
+            },
+            "taxPaid": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000000"
+            },
+            "taxArrears": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000000"
+            }
+          }
+        },
+        "lenders": {
+          "$id": {
+            ".validate": "newData.hasChildren(['id', 'ownerId', 'rate', 'pool', 'clientBuild']) && newData.child('id').val() === $id && newData.child('ownerId').isString() && newData.child('ownerId').val().length <= 16 && newData.child('rate').isNumber() && newData.child('rate').val() >= 1 && newData.child('rate').val() <= 15 && newData.child('pool').isNumber() && newData.child('pool').val() >= 0 && newData.child('pool').val() <= 1000000000 && newData.child('clientBuild').val() === '20260904d'"
+          }
+        },
+        "loans": {
+          "$id": {
+            ".validate": "newData.hasChildren(['id', 'lenderId', 'borrowerId', 'principal', 'rate', 'paid', 'openedAt', 'dueAt', 'status', 'clientBuild']) && newData.child('id').val() === $id && newData.child('lenderId').isString() && newData.child('borrowerId').isString() && newData.child('borrowerId').val().length <= 16 && newData.child('principal').isNumber() && newData.child('principal').val() >= 10 && newData.child('principal').val() <= 250 && newData.child('rate').isNumber() && newData.child('rate').val() >= 1 && newData.child('rate').val() <= 15 && newData.child('paid').isNumber() && newData.child('paid').val() >= 0 && newData.child('paid').val() <= 50000 && newData.child('openedAt').isNumber() && newData.child('dueAt').isNumber() && newData.child('dueAt').val() === newData.child('openedAt').val() + 86400000 && (newData.child('status').val() === 'open' || newData.child('status').val() === 'closed' || newData.child('status').val() === 'defaulted') && newData.child('clientBuild').val() === '20260904d'"
           }
         },
         "chatRooms": {

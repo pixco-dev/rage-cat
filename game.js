@@ -10,6 +10,10 @@
   const MIN_LEND_SEED = 40;
   const MIN_BORROW = 10;
   const MAX_BORROW = 250;
+  const MAX_OPEN_LOANS = 2;
+  const MAX_TOTAL_DEBT = 400;
+  const LOAN_DUE_MS = 24 * 60 * 60 * 1000;
+  const DEFAULT_LIQUIDATION_DISCOUNT = .2;
   const MIN_LEND_RATE = 1;
   const MAX_LEND_RATE = 15;
   const FIREBASE_WORLD_PATH = "bull-lab/world";
@@ -30,6 +34,9 @@
   const AI_TRADER_COUNT = 500;
   const AI_QUOTE_BUCKET_MS = 20000;
   const TRADE_FEE_RATE = .005;
+  const CORE_POSITION_LIMIT_RATE = .25;
+  const COMPANY_POSITION_LIMIT_RATE = .3;
+  const MAX_STORED_QTY = 10000;
   const AI_TRADER_ARCHETYPES = [
     { id: "momentum", share: .28, bias: .01, momentum: .9, value: -.1, news: .45, risk: .05 },
     { id: "value", share: .22, bias: -.01, momentum: -.15, value: .95, news: .2, risk: -.08 },
@@ -871,6 +878,9 @@
     connectedHandler: null,
     needsSeed: false,
     pendingTrades: new Set(),
+    tradeBusy: false,
+    enforcingLoans: false,
+    lendingBusy: false,
     lastToastAt: 0,
     entering: false,
     inMarket: false,
@@ -2220,11 +2230,14 @@
     const amount = round1(Number(pay.amount) || 0);
     if (amount <= 0) return;
     markLotteryClaimed(key);
-    state.cash = round1(state.cash + amount);
+    const tax = round1(amount * windfallTaxRate());
+    const net = round1(amount - tax);
+    state.cash = round1(state.cash + net);
+    state.taxPaid = round1((state.taxPaid || 0) + tax);
     writeWallet();
     queuePush();
     renderSummary();
-    toast("🎟️", "복권 당첨", `${money(amount)}을 받았습니다. (${pay.drawId} 추첨)`);
+    toast("🎟️", "복권 당첨", `${money(net)} 수령 · 당첨세 ${money(tax)} (${pay.drawId} 추첨)`);
     tone(660, .14, "square");
     const db = firebaseDb();
     if (db) {
@@ -2323,6 +2336,7 @@
           name: row.name || "",
           symbol: row.symbol || "",
           at: Number(row.at) || Date.now(),
+          reason: String(row.reason || "voluntary"),
           clientBuild: CLIENT_BUILD,
         };
       }
@@ -2442,6 +2456,9 @@
       cash,
       holdings,
       founded,
+      taxPaid: player.id === state.playerId ? (state.taxPaid || 0) : (player.taxPaid || 0),
+      taxArrears: player.id === state.playerId ? (state.taxArrears || 0) : (player.taxArrears || 0),
+      lastTaxPeriod: player.id === state.playerId ? (state.lastTaxPeriod || "") : (player.lastTaxPeriod || ""),
       total: player.id === state.playerId ? totalAssets() : (cash || 0) + holdingsValueOf(holdings),
       bot: false,
       updatedAt: Date.now(),
@@ -2459,9 +2476,12 @@
       const next = {
         id: row.id,
         name: row.name || row.id,
-        cash: row.cash || 0,
+        cash: Number.isFinite(Number(row.cash)) ? Math.max(0, Number(row.cash)) : 0,
         holdings: cloneHoldings(row.holdings),
         founded: row.founded || null,
+        taxPaid: Math.max(0, Number(row.taxPaid) || 0),
+        taxArrears: Math.max(0, Number(row.taxArrears) || 0),
+        lastTaxPeriod: String(row.lastTaxPeriod || ""),
         total: 0,
         bot: false,
         updatedAt: row.updatedAt || 0,
@@ -2499,6 +2519,7 @@
 
   function publicLoan(row) {
     if (!row?.id) return null;
+    const openedAt = Number(row.openedAt) || Number(row.updatedAt) || Date.now();
     return {
       id: String(row.id),
       lenderId: String(row.lenderId || ""),
@@ -2509,7 +2530,11 @@
       rate: Math.max(MIN_LEND_RATE, Math.min(MAX_LEND_RATE, Math.round(Number(row.rate) || MIN_LEND_RATE))),
       paid: Math.max(0, round1(Number(row.paid) || 0)),
       openedPeriod: String(row.openedPeriod || ""),
-      status: row.status === "closed" ? "closed" : "open",
+      openedAt,
+      dueAt: Number(row.dueAt) || openedAt + LOAN_DUE_MS,
+      status: row.status === "closed" ? "closed" : row.status === "defaulted" ? "defaulted" : "open",
+      enforcedAt: Math.max(0, Number(row.enforcedAt) || 0),
+      defaultedAt: Math.max(0, Number(row.defaultedAt) || 0),
       updatedAt: Number(row.updatedAt) || Date.now(),
       clientBuild: CLIENT_BUILD,
     };
@@ -2528,7 +2553,7 @@
       if (local && (Number(local.updatedAt) || 0) > (Number(next.updatedAt) || 0)) return;
       if (local && (Number(local.paid) || 0) > (Number(next.paid) || 0)) {
         next.paid = Number(local.paid) || 0;
-        if (local.status === "closed") next.status = "closed";
+        if (local.status === "closed" || local.status === "defaulted") next.status = local.status;
       }
       if (local) Object.assign(local, next);
       else byId.set(next.id, next);
@@ -2698,6 +2723,9 @@
       cashSafeWeeks: 0,
       profitableSales: 0,
       laborIncome: 0,
+      taxPaid: 0,
+      taxArrears: 0,
+      lastTaxPeriod: "",
       intelCount: 0,
       playCount: 0,
       jobsCount: 0,
@@ -3294,7 +3322,11 @@
   function cloneHoldings(holdings) {
     const out = {};
     Object.keys(holdings || {}).forEach((id) => {
-      out[id] = { qty: holdings[id].qty || 0, avg: holdings[id].avg || 0 };
+      const rawQty = Number(holdings[id]?.qty);
+      const rawAvg = Number(holdings[id]?.avg);
+      const qty = Number.isFinite(rawQty) ? Math.min(MAX_STORED_QTY, Math.max(0, Math.floor(rawQty))) : 0;
+      const avg = qty > 0 && Number.isFinite(rawAvg) ? Math.min(WEALTH_SANITY, Math.max(0, rawAvg)) : 0;
+      out[id] = { qty, avg };
     });
     return out;
   }
@@ -3323,6 +3355,9 @@
       cash: Number.isFinite(state.cash) ? state.cash : 0,
       holdings: cloneHoldings(state.holdings),
       founded: state.founded,
+      taxPaid: state.taxPaid || 0,
+      taxArrears: state.taxArrears || 0,
+      lastTaxPeriod: state.lastTaxPeriod || "",
       total: totalAssets(),
       bot: false,
       updatedAt: Date.now(),
@@ -3389,6 +3424,9 @@
         lending: state.lending,
         loans: (state.loans || []).filter((loan) => loan.borrowerId === session.id || loan.lenderId === `ln-${session.id}` || loan.lenderId === session.id),
         laborIncome: state.laborIncome,
+        taxPaid: state.taxPaid,
+        taxArrears: state.taxArrears,
+        lastTaxPeriod: state.lastTaxPeriod,
         initialCash: state.initialCash,
         modeKey: state.modeKey,
         research: state.research,
@@ -3435,6 +3473,9 @@
       state.loans = mergeLoanList(state.loans, row.loans);
     }
     if (Number.isFinite(row.laborIncome)) state.laborIncome = row.laborIncome;
+    if (Number.isFinite(row.taxPaid)) state.taxPaid = Math.max(0, row.taxPaid);
+    if (Number.isFinite(row.taxArrears)) state.taxArrears = Math.max(0, row.taxArrears);
+    if (typeof row.lastTaxPeriod === "string") state.lastTaxPeriod = row.lastTaxPeriod;
     if (Number.isFinite(row.initialCash)) state.initialCash = row.initialCash;
     if (Number.isFinite(row.research)) state.research = row.research;
     applyWeekActivity(row);
@@ -3460,6 +3501,9 @@
         holdings: {},
         founded: null,
         laborIncome: 0,
+        taxPaid: 0,
+        taxArrears: 0,
+        lastTaxPeriod: "",
         initialCash: cash,
         modeKey: "rookie",
         research: MODES.rookie.research,
@@ -3483,8 +3527,8 @@
   function pickWealthRow(localRow, worldRow) {
     const localCash = Number(localRow?.cash);
     const worldCash = Number(worldRow?.cash);
-    const localOk = Number.isFinite(localCash) && localCash > 0;
-    const worldOk = Number.isFinite(worldCash) && worldCash > 0;
+    const localOk = Number.isFinite(localCash) && localCash >= 0;
+    const worldOk = Number.isFinite(worldCash) && worldCash >= 0;
     if (localOk && !worldOk) return localRow;
     if (worldOk && !localOk) return worldRow;
     const localAt = localRow?.updatedAt || 0;
@@ -3504,14 +3548,8 @@
 
   function ensureTradableCash() {
     if (!state) return;
-    if (!Number.isFinite(state.cash)) state.cash = Number(state.initialCash) || Number(state.config?.cash) || 800;
-    const invested = holdingsValue();
-    if (state.cash < 1 && invested < 1) {
-      const wallet = readWallet(state.playerId);
-      const wCash = Number(wallet?.cash);
-      if (Number.isFinite(wCash) && wCash >= 1) applyWallet(wallet);
-      else state.cash = Number(state.initialCash) || Number(state.config?.cash) || 800;
-    }
+    if (!Number.isFinite(state.cash)) state.cash = 0;
+    state.cash = round1(Math.max(0, state.cash));
   }
 
   function flowImpact(asset, signedQty) {
@@ -3690,6 +3728,100 @@
     return round1(gross * multiplier);
   }
 
+  function maxPositionQty(asset) {
+    const rate = isSchoolListing(asset) ? COMPANY_POSITION_LIMIT_RATE : CORE_POSITION_LIMIT_RATE;
+    return Math.max(1, Math.floor(Math.max(40, Number(asset?.float) || 400) * rate));
+  }
+
+  function capitalGainsTaxRate(wealth = totalAssets()) {
+    if (wealth >= 6000) return .18;
+    if (wealth >= 3000) return .1;
+    if (wealth >= 1600) return .05;
+    return 0;
+  }
+
+  function capitalGainsTax(profit, wealth = totalAssets()) {
+    return round1(Math.max(0, Number(profit) || 0) * capitalGainsTaxRate(wealth));
+  }
+
+  function windfallTaxRate(wealth = totalAssets()) {
+    if (wealth >= 6000) return .4;
+    if (wealth >= 3000) return .3;
+    if (wealth >= 1600) return .2;
+    return .1;
+  }
+
+  function progressiveWealthTax(wealth = totalAssets()) {
+    let taxable = Math.max(0, Number(wealth) || 0);
+    let tax = 0;
+    const bands = [
+      { width: 1600, rate: 0 },
+      { width: 1600, rate: .01 },
+      { width: 3200, rate: .025 },
+      { width: Infinity, rate: .05 },
+    ];
+    for (const band of bands) {
+      if (!(taxable > 0)) break;
+      const slice = Math.min(taxable, band.width);
+      tax += slice * band.rate;
+      taxable -= slice;
+    }
+    return round1(tax);
+  }
+
+  function collectFromPortfolio(amount) {
+    let remaining = round1(Math.max(0, Number(amount) || 0));
+    const cashTake = round1(Math.min(Math.max(0, state.cash), remaining));
+    state.cash = round1(Math.max(0, state.cash - cashTake));
+    remaining = round1(Math.max(0, remaining - cashTake));
+    let collected = cashTake;
+    let sold = 0;
+    const assets = (state.assets || []).filter((asset) => ensureHolding(state.holdings, asset.id).qty > 0).sort((a, b) => {
+      const aOwn = a.id === state.founded?.assetId ? 1 : 0;
+      const bOwn = b.id === state.founded?.assetId ? 1 : 0;
+      if (aOwn !== bOwn) return aOwn - bOwn;
+      return quotePrice(b) * ensureHolding(state.holdings, b.id).qty - quotePrice(a) * ensureHolding(state.holdings, a.id).qty;
+    });
+    for (const asset of assets) {
+      if (!(remaining > 0)) break;
+      const holding = ensureHolding(state.holdings, asset.id);
+      const unit = Math.max(.1, tradeTotal(quotePrice(asset), 1, "sell"));
+      const shares = Math.min(holding.qty, Math.ceil(remaining / unit));
+      if (!(shares > 0)) continue;
+      const value = round1(unit * shares);
+      const used = round1(Math.min(remaining, value));
+      holding.qty -= shares;
+      if (holding.qty <= 0) {
+        holding.qty = 0;
+        holding.avg = 0;
+      }
+      applyFlow(asset, -shares);
+      markTouched(asset.id);
+      const excess = round1(Math.max(0, value - used));
+      if (excess > 0) state.cash = round1(state.cash + excess);
+      collected = round1(collected + used);
+      remaining = round1(Math.max(0, remaining - used));
+      sold += shares;
+    }
+    return { assessed: round1(amount), collected, arrears: remaining, sold };
+  }
+
+  function collectQuarterlyTax(periodId) {
+    if (!periodId || state.lastTaxPeriod === periodId) return { assessed: 0, collected: 0, arrears: state.taxArrears || 0, sold: 0 };
+    const assessed = round1(progressiveWealthTax(totalAssets()) + Math.max(0, Number(state.taxArrears) || 0));
+    const result = collectFromPortfolio(assessed);
+    state.taxPaid = round1((state.taxPaid || 0) + result.collected);
+    state.taxArrears = result.arrears;
+    state.lastTaxPeriod = periodId;
+    if (result.assessed > 0) {
+      const detail = `${money(result.collected)} 징수${result.sold > 0 ? ` · ${result.sold}주 자동매각` : ""}${result.arrears > 0 ? ` · 미납 ${money(result.arrears)}` : ""}`;
+      toast("🏛️", "분기 누진 자산세", detail);
+    }
+    syncLocalPlayer();
+    queuePush();
+    return result;
+  }
+
   function executeTrade(playerId, assetId, side, qty, options = {}) {
     const actor = getActor(playerId);
     const asset = assetById(assetId);
@@ -3702,6 +3834,7 @@
       ? Math.max(5, round1(asset.price * (1 + flowImpact(asset, signedQty))))
       : asset.price;
     if (side === "buy") {
+      if (holding.qty + qty > maxPositionQty(asset)) return { ok: false, err: "limit" };
       const cost = tradeTotal(px, qty, side);
       if (cost > actor.cash + 1e-9) return { ok: false, err: "cash" };
       holding.avg = (holding.avg * holding.qty + cost) / (holding.qty + qty);
@@ -3711,8 +3844,14 @@
       if (actor.isLocal && !options.silent) recordTrade("buy", asset, qty, cost);
     } else {
       if (qty > holding.qty) return { ok: false, err: "qty" };
-      const proceeds = tradeTotal(px, qty, side);
-      if (actor.isLocal && proceeds > holding.avg * qty) state.profitableSales += 1;
+      const grossProceeds = tradeTotal(px, qty, side);
+      const gainBeforeTax = round1(grossProceeds - holding.avg * qty);
+      const tax = actor.isLocal ? capitalGainsTax(gainBeforeTax) : 0;
+      const proceeds = round1(grossProceeds - tax);
+      if (actor.isLocal && gainBeforeTax > 0) {
+        state.profitableSales += 1;
+        state.taxPaid = round1((state.taxPaid || 0) + tax);
+      }
       holding.qty -= qty;
       actor.cash = round1(actor.cash + proceeds);
       if (holding.qty === 0) holding.avg = 0;
@@ -3750,6 +3889,7 @@
       const traded = nextTradedAsset(await read.json(), localAsset, side, qty);
       if (!traded) throw new Error("firebase-rest-invalid-asset");
       if (side === "buy" && tradeTotal(traded.fillPrice, qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
+      if (side === "buy" && ensureHolding(state.holdings, assetId).qty + qty > maxPositionQty(localAsset)) return { ok: false, err: "limit" };
       if (side === "sell" && qty > ensureHolding(state.holdings, assetId).qty) return { ok: false, err: "qty" };
       const headers = { "Content-Type": "application/json" };
       if (etag) headers["If-Match"] = etag;
@@ -3781,9 +3921,11 @@
     const localHolding = ensureHolding(state.holdings, assetId);
     if (!localAsset || qty < 1 || !state.active) return { ok: false, err: "locked" };
     if (side === "buy" && tradeTotal(Math.max(quotePrice(localAsset), Number(localAsset.price) || 0), qty, side) > state.cash + 1e-9) return { ok: false, err: "cash" };
+    if (side === "buy" && localHolding.qty + qty > maxPositionQty(localAsset)) return { ok: false, err: "limit" };
     if (side === "sell" && qty > localHolding.qty) return { ok: false, err: "qty" };
-    if (worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
+    if (worldSync.tradeBusy || worldSync.pendingTrades.has(assetId)) return { ok: false, err: "pending" };
 
+    worldSync.tradeBusy = true;
     worldSync.pendingTrades.add(assetId);
     try {
       const result = await tradeAssetWithRest(assetId, side, qty, localAsset);
@@ -3794,15 +3936,20 @@
       pushTick(asset, quotePrice(asset));
       const holding = ensureHolding(state.holdings, assetId);
       const fillPrice = result.fillPrice;
-      const total = tradeTotal(fillPrice, qty, side);
+      let total = tradeTotal(fillPrice, qty, side);
       let realizedProfit = 0;
+      let tax = 0;
       if (side === "buy") {
         holding.avg = (holding.avg * holding.qty + total) / (holding.qty + qty);
         holding.qty += qty;
         state.cash = round1(state.cash - total);
       } else {
+        const gainBeforeTax = round1(total - holding.avg * qty);
+        tax = capitalGainsTax(gainBeforeTax);
+        total = round1(total - tax);
         realizedProfit = round1(total - holding.avg * qty);
-        if (realizedProfit > 0) state.profitableSales += 1;
+        if (gainBeforeTax > 0) state.profitableSales += 1;
+        state.taxPaid = round1((state.taxPaid || 0) + tax);
         holding.qty -= qty;
         state.cash = round1(state.cash + total);
         if (holding.qty === 0) holding.avg = 0;
@@ -3818,12 +3965,14 @@
         holdingQty: holding.qty,
         cash: state.cash,
         realizedProfit,
+        tax,
       };
     } catch {
       noteWorldError();
       return { ok: false, err: "network" };
     } finally {
       worldSync.pendingTrades.delete(assetId);
+      worldSync.tradeBusy = false;
     }
   }
 
@@ -3868,9 +4017,10 @@
     return `${base}-${Date.now().toString(36)}`;
   }
 
-  function closeCompany() {
+  function closeCompany(options = {}) {
     const founded = state.founded;
     if (!founded?.assetId) return { ok: false, err: "missing" };
+    if (!options.forced && borrowerLoans().length) return { ok: false, err: "debt" };
     const asset = assetById(founded.assetId);
     if (!asset || asset.founderId !== state.playerId) return { ok: false, err: "missing" };
     const id = asset.id;
@@ -3884,6 +4034,7 @@
       name: asset.name,
       symbol: asset.symbol,
       at: Date.now(),
+      reason: options.reason || "voluntary",
     };
     dropAssetEverywhere(id);
     state.founded = null;
@@ -3896,6 +4047,9 @@
 
   function listCompany(spec) {
     const { ownerId, ownerName, name, symbol, sectorKey, seed } = spec;
+    if (ownerId === state.playerId && borrowerLoans().some((loan) => loan.status === "defaulted")) {
+      return { ok: false, err: "debt" };
+    }
     const owner = getActor(ownerId);
     if (!owner) return { ok: false, err: "player" };
     const player = state.players.find((item) => item.id === ownerId);
@@ -3932,7 +4086,7 @@
       risk: 4,
       color: PLAYER_COLORS[state.assets.length % PLAYER_COLORS.length],
       dividend: sectorKey === "retail" || sectorKey === "gold" ? 0.006 : 0,
-      float: Math.max(90, founderQty * 3),
+      float: Math.max(90, Math.ceil(founderQty / COMPANY_POSITION_LIMIT_RATE)),
       weekFlow: 0,
       lastFlow: 0,
       weekOpen: price,
@@ -4008,6 +4162,29 @@
     ));
   }
 
+  function borrowerLoans(playerId = state?.playerId) {
+    return (state?.loans || []).filter((loan) => (
+      loan.borrowerId === playerId && loan.status !== "closed" && loanRemaining(loan) > 0
+    ));
+  }
+
+  function totalDebtFor(playerId = state?.playerId) {
+    return round1(borrowerLoans(playerId).reduce((sum, loan) => sum + loanRemaining(loan), 0));
+  }
+
+  function debtCapacityRemaining() {
+    const capacity = Math.min(MAX_TOTAL_DEBT, Math.max(0, totalAssets() * .45));
+    return Math.max(0, round1(capacity - totalDebtFor()));
+  }
+
+  function loanDueText(loan) {
+    if (!loan || loan.status === "closed") return "";
+    if (loan.status === "defaulted") return "연체 확정";
+    const left = (Number(loan.dueAt) || 0) - Date.now();
+    if (left <= 0) return "연체 · 강제회수 대기";
+    return `상환기한 ${Math.max(1, Math.ceil(left / 3600000))}시간`;
+  }
+
   function lendingNetFor(playerId) {
     if (!playerId) return 0;
     const lender = (state.lenders || []).find((item) => item.ownerId === playerId);
@@ -4015,7 +4192,7 @@
     (state.loans || []).forEach((loan) => {
       if (loan.status === "closed") return;
       const rem = loanRemaining(loan);
-      if (lender && loan.lenderId === lender.id) net += rem;
+      if (lender && loan.lenderId === lender.id && loan.status !== "defaulted") net += rem;
       if (loan.borrowerId === playerId) net -= rem;
     });
     return net;
@@ -4160,11 +4337,16 @@
     if (amount < MIN_BORROW) return { ok: false, err: "min" };
     if (amount > MAX_BORROW) return { ok: false, err: "max" };
     if (openLoanFor(lenderId, state.playerId)) return { ok: false, err: "open" };
+    const openLoans = borrowerLoans();
+    if (openLoans.some((loan) => loan.status === "defaulted")) return { ok: false, err: "default" };
+    if (openLoans.length >= MAX_OPEN_LOANS) return { ok: false, err: "count" };
+    if (amount > debtCapacityRemaining() + 1e-9) return { ok: false, err: "capacity" };
     const pooled = round1(Number(lender.pool) || 0);
     if (pooled + 1e-9 < amount) return { ok: false, err: "pool" };
     const result = await syncLenderPool(lenderId, -amount);
     if (!result.ok) return result;
     applyLenderRow(result.lender);
+    const openedAt = Date.now();
     const loan = upsertLoan({
       id: `loan-${lender.ownerId}-${state.playerId}`,
       lenderId: lender.id,
@@ -4175,8 +4357,10 @@
       rate: lender.rate,
       paid: 0,
       openedPeriod: currentSettledPeriodId(),
+      openedAt,
+      dueAt: openedAt + LOAN_DUE_MS,
       status: "open",
-      updatedAt: Date.now(),
+      updatedAt: openedAt,
     });
     state.cash = round1(state.cash + amount);
     syncLocalPlayer();
@@ -4206,6 +4390,75 @@
     markTouched(`lend:${lenderId}`);
     markTouched(`loan:${loan.id}`);
     return { ok: true, loan, amount: pay, remaining: loanRemaining(loan) };
+  }
+
+  async function enforceOverdueLoans() {
+    if (!state?.active || worldSync.enforcingLoans) return;
+    const overdue = borrowerLoans().filter((loan) => (
+      loan.status === "open" && Date.now() >= (Number(loan.dueAt) || Infinity)
+    ));
+    if (!overdue.length) return;
+    worldSync.enforcingLoans = true;
+    try {
+      for (const loan of overdue) {
+        const remaining = loanRemaining(loan);
+        if (!(remaining > 0)) continue;
+        const cashTake = round1(Math.min(Math.max(0, state.cash), remaining));
+        let companyShares = 0;
+        let collateralValue = 0;
+        const company = state.founded?.assetId ? assetById(state.founded.assetId) : null;
+        const companyHolding = company ? ensureHolding(state.holdings, company.id) : null;
+        const afterCash = Math.max(0, round1(remaining - cashTake));
+        if (afterCash > 0 && company && companyHolding?.qty > 0) {
+          const unit = Math.max(.1, round1(tradeTotal(quotePrice(company), 1, "sell") * (1 - DEFAULT_LIQUIDATION_DISCOUNT)));
+          companyShares = Math.min(companyHolding.qty, Math.ceil(afterCash / unit));
+          collateralValue = round1(unit * companyShares);
+        }
+        const collected = round1(Math.min(remaining, cashTake + collateralValue));
+        const lenderResult = collected > 0 ? await syncLenderPool(loan.lenderId, collected) : { ok: true };
+        if (!lenderResult.ok) continue;
+        if (lenderResult.lender) applyLenderRow(lenderResult.lender);
+
+        state.cash = round1(Math.max(0, state.cash - cashTake));
+        if (company && companyHolding && companyShares > 0) {
+          companyHolding.qty -= companyShares;
+          if (companyHolding.qty <= 0) {
+            companyHolding.qty = 0;
+            companyHolding.avg = 0;
+          }
+          applyFlow(company, -companyShares);
+          const excess = round1(Math.max(0, cashTake + collateralValue - collected));
+          if (excess > 0) state.cash = round1(state.cash + excess);
+          markTouched(company.id);
+        }
+        loan.paid = round1((Number(loan.paid) || 0) + collected);
+        loan.enforcedAt = Date.now();
+        loan.updatedAt = loan.enforcedAt;
+        const debtLeft = loanRemaining(loan);
+        let closed = null;
+        if (debtLeft <= 0) {
+          loan.status = "closed";
+        } else {
+          loan.status = "defaulted";
+          loan.defaultedAt = loan.enforcedAt;
+          if (state.founded) closed = closeCompany({ forced: true, reason: "loan-default" });
+        }
+        upsertLoan(loan);
+        markTouched(`lend:${loan.lenderId}`);
+        markTouched(`loan:${loan.id}`);
+        syncLocalPlayer();
+        queuePush();
+        const detail = closed?.ok
+          ? `${money(collected)} 강제 회수 · 남은 빚 ${money(debtLeft)} · ${closed.name} 상장폐지`
+          : debtLeft > 0
+            ? `${money(collected)} 강제 회수 · 남은 빚 ${money(debtLeft)} · 연체 확정`
+            : `${money(collected)} 강제 회수 · 완납`;
+        toast("⚠️", "24시간 대출 연체 처리", detail);
+      }
+      renderAll();
+    } finally {
+      worldSync.enforcingLoans = false;
+    }
   }
 
   async function moveOwnPool(delta) {
@@ -4239,9 +4492,12 @@
   function creditFounderOps(asset) {
     if (!asset?.playerCompany || !asset.founderId) return 0;
     const shock = asset.opsShock || 0;
-    const payout = round1(Math.max(0.8, asset.price * 0.045 * (1.2 + shock * 6)));
     const actor = getActor(asset.founderId);
-    if (!actor || !(payout > 0)) return 0;
+    if (!actor) return 0;
+    const wealth = actor.isLocal ? totalAssets() : playerTotal(actor.player);
+    const wealthFactor = wealth >= 6000 ? .45 : wealth >= 3000 ? .65 : wealth >= 1600 ? .82 : 1;
+    const payout = round1(Math.min(6, Math.max(0, asset.price * .025 * (1 + shock * 4))) * wealthFactor);
+    if (!(payout > 0)) return 0;
     actor.cash = round1(actor.cash + payout);
     if (actor.isLocal) {
       toast("🏢", `${asset.name} 영업입금`, `창업 계좌로 ${money(payout)}이 들어왔습니다.`);
@@ -4811,7 +5067,8 @@
     });
 
     const weekChanged = remote.week && (remote.week !== state.week || remote.season !== state.season);
-    if (!preferLocal) {
+    const newerSettlement = !!(remote.lastSettledPeriodId && remote.lastSettledPeriodId > (prevSettled || ""));
+    if (!preferLocal || newerSettlement) {
       if (remote.week) state.week = remote.week;
       if (remote.season) state.season = remote.season;
       if (remote.event || Number.isInteger(remote.eventKey)) {
@@ -4948,8 +5205,14 @@
     try {
       const before = totalAssets();
       const weekBefore = activityWeekKey();
+      const seasonNumberBefore = state.season;
+      const weekNumberBefore = state.week;
       const result = mergeWorld(remote, { preferLocal });
       let needsFullRender = false;
+      let taxResult = { assessed: 0, collected: 0, arrears: state.taxArrears || 0, sold: 0 };
+      if (result.weekChanged && weekNumberBefore % 4 === 0) {
+        taxResult = collectQuarterlyTax(`${seasonNumberBefore}:${weekNumberBefore}`);
+      }
       if (activityWeekKey() !== weekBefore) {
         computeWeekExpectations();
         startWeekActivities(true);
@@ -4959,7 +5222,7 @@
         needsFullRender = true;
       }
       if (result.settled) {
-        showWeekResult(totalAssets() - before, totalAssets(), 0);
+        showWeekResult(totalAssets() - before, totalAssets(), 0, taxResult);
         needsFullRender = true;
       }
       ensureCoreListings();
@@ -5290,6 +5553,7 @@
     worldSync.appliedPeriodId = periodKey;
     worldSync.lastSettledPeriodId = periodKey;
     let localDividend = 0;
+    let taxResult = { assessed: 0, collected: 0, arrears: state.taxArrears || 0, sold: 0 };
     if (state.week % 4 === 0) {
       state.assets.forEach((asset) => {
         if (!(asset.dividend > 0)) return;
@@ -5300,12 +5564,13 @@
         state.cash = round1(state.cash + localDividend);
         toast("💰", "분기 배당 입금", `${money(localDividend)}이 현금 계좌에 들어왔습니다.`);
       }
+      taxResult = collectQuarterlyTax(`${state.season}:${state.week}`);
     }
     const after = totalAssets();
     if (after > 0 && state.cash / after >= .3) state.cashSafeWeeks += 1;
     checkMissions();
     checkBadges();
-    showWeekResult(after - before, after, localDividend);
+    showWeekResult(after - before, after, localDividend, taxResult);
     advanceSharedWeek();
     state.locked = false;
     syncLocalPlayer();
@@ -5369,6 +5634,8 @@
     if (isDeskEditing()) return;
     await maybeSettleFromClock();
     if (state?.active) {
+      await enforceOverdueLoans();
+      renderLenders();
       maybeSettleLottery();
       tryClaimLotteryWin();
     }
@@ -5729,7 +5996,11 @@
     if (!result.ok) {
       if (els.closeError) {
         els.closeError.hidden = false;
-        els.closeError.textContent = result.err === "missing" ? "폐업할 회사가 없습니다." : "폐업하지 못했습니다.";
+        els.closeError.textContent = result.err === "missing"
+          ? "폐업할 회사가 없습니다."
+          : result.err === "debt"
+            ? "갚지 않은 대출이 있으면 자진 폐업할 수 없습니다. 먼저 빚을 갚아 주세요."
+            : "폐업하지 못했습니다.";
       }
       return;
     }
@@ -5819,8 +6090,8 @@
     if (els.borrowTitle) els.borrowTitle.textContent = titles[action] || "대출";
     const amountEl = els.borrowAmount;
     if (action === "borrow") {
-      const max = Math.min(MAX_BORROW, Math.floor((Number(lender?.pool) || 0)));
-      els.borrowLead.textContent = `${lender?.name || "대출회사"} · 교시당 ${lender?.rate || 0}% · 재원 ${money(lender?.pool || 0)}. 주식처럼 사고파는 회사가 아닙니다.`;
+      const max = Math.min(MAX_BORROW, Math.floor((Number(lender?.pool) || 0)), Math.floor(debtCapacityRemaining()));
+      els.borrowLead.textContent = `${lender?.name || "대출회사"} · 교시당 ${lender?.rate || 0}% · 최대 ${money(Math.max(0, max))}. 24시간 안에 갚지 않으면 현금과 본인 회사 지분이 강제 회수되고, 부족하면 회사가 상장폐지됩니다.`;
       if (amountEl) {
         amountEl.min = String(MIN_BORROW);
         amountEl.step = "1";
@@ -5897,6 +6168,10 @@
 
   async function submitBorrow(event) {
     event.preventDefault();
+    if (worldSync.lendingBusy) {
+      showBorrowError("이전 대출 요청을 처리하고 있습니다.");
+      return;
+    }
     const amount = round1(Number(els.borrowAmount.value));
     if (!(amount > 0)) {
       showBorrowError("금액을 입력하세요.");
@@ -5905,11 +6180,16 @@
     const action = pendingLendAction;
     const lenderId = pendingBorrowLenderId;
     let result;
-    if (action === "borrow") result = await borrowFromLender(lenderId, amount);
-    else if (action === "repay") result = await repayLoan(lenderId, amount);
-    else if (action === "fund") result = await moveOwnPool(amount);
-    else if (action === "withdraw") result = await moveOwnPool(-amount);
-    else result = { ok: false, err: "locked" };
+    worldSync.lendingBusy = true;
+    try {
+      if (action === "borrow") result = await borrowFromLender(lenderId, amount);
+      else if (action === "repay") result = await repayLoan(lenderId, amount);
+      else if (action === "fund") result = await moveOwnPool(amount);
+      else if (action === "withdraw") result = await moveOwnPool(-amount);
+      else result = { ok: false, err: "locked" };
+    } finally {
+      worldSync.lendingBusy = false;
+    }
     if (!result.ok) {
       const map = {
         locked: "시장에 들어간 뒤 이용하세요.",
@@ -5918,6 +6198,9 @@
         min: "금액이 너무 작습니다.",
         max: `한 번에 ${money(MAX_BORROW)}까지입니다.`,
         open: "이 회사에서 이미 갚지 않은 대출이 있습니다.",
+        default: "연체 대출을 모두 갚기 전에는 새로 빌릴 수 없습니다.",
+        count: `동시에 이용할 수 있는 대출회사는 ${MAX_OPEN_LOANS}곳까지입니다.`,
+        capacity: `총 대출은 순자산의 45%, 최대 ${money(MAX_TOTAL_DEBT)}까지만 가능합니다.`,
         pool: "대출 재원이 부족합니다.",
         cash: "현금이 부족합니다.",
         network: "공유 시장에 닿지 못했습니다. 잠시 후 다시 눌러 주세요.",
@@ -5939,7 +6222,7 @@
     const lendersKey = `${state.playerId}|${lenders.map((lender) => (
       `${lender.id}:${lender.name}:${lender.ownerId}:${lender.rate}:${lender.pool}`
     )).join("|")}|${(state.loans || []).map((loan) => (
-      `${loan.id}:${loan.lenderId}:${loan.borrowerId}:${loan.status}:${loanRemaining(loan)}`
+      `${loan.id}:${loan.lenderId}:${loan.borrowerId}:${loan.status}:${loanRemaining(loan)}:${loanDueText(loan)}`
     )).join("|")}`;
     if (worldSync.lendersRenderKey === lendersKey) return;
     worldSync.lendersRenderKey = lendersKey;
@@ -5948,7 +6231,8 @@
     ), 0);
     if (els.lendDebt) {
       els.lendDebt.hidden = !(myDebt > 0);
-      els.lendDebt.textContent = myDebt > 0 ? `내가 갚을 돈 ${money(myDebt)} · 이자는 교시가 끝날 때마다 붙습니다.` : "";
+      const overdue = borrowerLoans().some((loan) => loan.status === "defaulted" || Date.now() >= Number(loan.dueAt || Infinity));
+      els.lendDebt.textContent = myDebt > 0 ? `내가 갚을 돈 ${money(myDebt)} · 교시당 이자 · ${overdue ? "연체 처리 중" : "24시간 내 상환"}` : "";
     }
     if (!lenders.length) {
       els.lendList.innerHTML = `<li class="lend-empty">아직 대출회사가 없습니다. 주식 회사와 별도로, 돈을 빌려주는 창구만 열 수 있습니다.</li>`;
@@ -5971,7 +6255,7 @@
         <li class="${mine ? "is-mine" : ""}">
           <span class="lend-sym">${mine ? "내 회사" : "대출"} · 교시당 ${esc(lender.rate)}%</span>
           <b>${esc(lender.name)}</b>
-          <small>${esc(lender.ownerName || "사장")} · 재원 ${money(lender.pool)}${issued > 0 ? ` · 빌려준 잔액 ${money(issued)}` : ""}${remaining > 0 ? ` · 내 빚 ${money(remaining)}` : ""}</small>
+          <small>${esc(lender.ownerName || "사장")} · 재원 ${money(lender.pool)}${issued > 0 ? ` · 빌려준 잔액 ${money(issued)}` : ""}${remaining > 0 ? ` · 내 빚 ${money(remaining)} · ${esc(loanDueText(loan))}` : ""}</small>
           <div class="lend-actions">${actions}</div>
         </li>`;
     }).join("");
@@ -5995,6 +6279,7 @@
         dup: "이미 있는 티커입니다.",
         name: "상호를 2자 이상 입력하세요.",
         cash: "시드 현금이 부족합니다.",
+        debt: "연체 대출을 모두 갚기 전에는 회사를 만들 수 없습니다.",
       };
       els.foundError.hidden = false;
       els.foundError.textContent = map[result.err] || "설립에 실패했습니다.";
@@ -6375,7 +6660,7 @@
     els.difficultyLabel.textContent = state.config.name;
     els.totalAssets.textContent = money(total);
     els.cash.textContent = money(state.cash);
-    els.cashRatio.textContent = `현금 비중 ${Math.round(cashRatio * 100)}%`;
+    els.cashRatio.textContent = `현금 비중 ${Math.round(cashRatio * 100)}%${state.taxArrears > 0 ? ` · 세금 미납 ${money(state.taxArrears)}` : ""}`;
     els.totalReturn.textContent = percent(rate);
     els.totalReturn.style.color = rate > 0 ? "var(--red)" : rate < 0 ? "var(--green)" : "";
     els.profitValue.textContent = `평가 손익 ${signedMoney(profit)}`;
@@ -6452,7 +6737,8 @@
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
-    const maxBuy = Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE)));
+    const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
+    const maxBuy = Math.min(positionRoom, Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE))));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
     const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
@@ -6487,7 +6773,7 @@
         <div class="trade-box">
           <div class="position-info">
             <span>보유 <b class="pos-qty">${holding.qty}주</b></span>
-            <span class="pos-meta">${holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b>` : `최대 ${maxBuy}주`}</span>
+            <span class="pos-meta">${holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b> · 한도 ${maxPositionQty(asset)}주` : `최대 ${maxBuy}주`}</span>
           </div>
           <div class="quantity">
             <button data-action="minus" type="button" ${disabled ? "disabled" : ""}>−</button>
@@ -6495,7 +6781,7 @@
             <button data-action="plus" type="button" ${disabled ? "disabled" : ""}>+</button>
           </div>
           <div class="trade-actions">
-            <button data-action="buy" type="button" ${disabled ? "disabled" : ""} ${maxBuy < 1 ? `title="현금이 부족합니다"` : ""}>매수</button>
+            <button data-action="buy" type="button" ${disabled || maxBuy < 1 ? "disabled" : ""} ${maxBuy < 1 ? `title="현금 또는 종목별 보유 한도를 확인하세요"` : ""}>매수</button>
             <button class="sell" data-action="sell" type="button" ${disabled || holding.qty < 1 ? "disabled" : ""}>매도</button>
           </div>
         </div>
@@ -6508,7 +6794,8 @@
     const holding = ensureHolding(state.holdings, asset.id);
     const forecast = forecastFor(asset);
     const quote = quotePrice(asset);
-    const maxBuy = Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE)));
+    const positionRoom = Math.max(0, maxPositionQty(asset) - holding.qty);
+    const maxBuy = Math.min(positionRoom, Math.floor(state.cash / Math.max(1, quote * (1 + TRADE_FEE_RATE))));
     const disabled = !state.active;
     const changeType = asset.lastChange > .0005 ? "up" : asset.lastChange < -.0005 ? "down" : "flat";
     const positionProfit = holding.qty > 0 ? tradeTotal(quote, holding.qty, "sell") - holding.avg * holding.qty : 0;
@@ -6539,7 +6826,7 @@
     const qtyEl = row.querySelector(".pos-qty");
     if (qtyEl) qtyEl.textContent = `${holding.qty}주`;
     const meta = row.querySelector(".pos-meta");
-    if (meta) meta.innerHTML = holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b>` : `최대 ${maxBuy}주`;
+    if (meta) meta.innerHTML = holding.qty ? `손익 <b>${signedMoney(positionProfit)}</b> · 한도 ${maxPositionQty(asset)}주` : `최대 ${maxBuy}주`;
     row.querySelectorAll("[data-action='minus'], [data-action='plus']").forEach((button) => {
       button.disabled = disabled;
     });
@@ -6547,9 +6834,9 @@
     if (input) input.disabled = disabled;
     const buyBtn = row.querySelector("[data-action='buy']");
     if (buyBtn && buyBtn.getAttribute("aria-busy") !== "true") {
-      buyBtn.disabled = disabled;
+      buyBtn.disabled = disabled || maxBuy < 1;
       buyBtn.textContent = "매수";
-      if (maxBuy < 1) buyBtn.setAttribute("title", "현금이 부족합니다");
+      if (maxBuy < 1) buyBtn.setAttribute("title", "현금 또는 종목별 보유 한도를 확인하세요");
       else buyBtn.removeAttribute("title");
     }
     const sellBtn = row.querySelector("[data-action='sell']");
@@ -6847,6 +7134,8 @@
           ? "같은 종목의 이전 주문을 처리하고 있습니다."
           : result.err === "cash"
             ? "현금이 부족합니다. 수량을 줄여 주세요."
+            : result.err === "limit"
+              ? "한 종목은 유통주식의 25%(학생 회사 30%)까지만 보유할 수 있습니다."
             : "시장 입장 상태와 주문 수량을 확인하세요.";
       toast("⚠️", "매수 실패", message);
       tone(130, .12, "sawtooth");
@@ -6865,7 +7154,7 @@
     try {
       const result = await executeSharedTrade(id, "sell", qty);
       if (result.ok) {
-        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · ${money(result.total)} · 실현손익 ${signedMoney(result.realizedProfit)} · 보유 ${result.holdingQty}주`);
+        toast("✅", "매도 완료", `${result.assetName} ${qty}주 · 실수령 ${money(result.total)}${result.tax > 0 ? ` · 양도세 ${money(result.tax)}` : ""} · 실현손익 ${signedMoney(result.realizedProfit)} · 보유 ${result.holdingQty}주`);
         return;
       }
       const message = result.err === "network"
@@ -6973,6 +7262,14 @@
     return true;
   }
 
+  function earnedIncomeMultiplier() {
+    const wealth = totalAssets();
+    if (wealth < 1200) return 1.2;
+    if (wealth >= 6000) return .5;
+    if (wealth >= 3000) return .75;
+    return 1;
+  }
+
   function payJob(job, score) {
     const passed = Number(score) >= ACTIVITY_PASS_SCORE;
     state.jobsDone.add(job.id);
@@ -6984,7 +7281,7 @@
       return 0;
     }
     const [minPay, maxPay] = job.pay;
-    const reward = Math.round((minPay + (maxPay - minPay) * Math.max(0, Math.min(1, score))) * 10) / 10;
+    const reward = round1((minPay + (maxPay - minPay) * Math.max(0, Math.min(1, score))) * earnedIncomeMultiplier());
     state.cash += reward;
     state.laborIncome += reward;
     state.jobsCount += 1;
@@ -7002,11 +7299,14 @@
     els.jobsPanel.innerHTML = state.weekJobs.map((job) => {
       const done = state.jobsDone.has(job.id);
       const disabled = busy || done || state.energy < job.energy;
+      const incomeFactor = earnedIncomeMultiplier();
+      const payMin = round1(job.pay[0] * incomeFactor);
+      const payMax = round1(job.pay[1] * incomeFactor);
       return `
         <article class="job-card ${done ? "done" : ""}">
           <header><span class="job-icon">${job.icon}</span><div><b>${job.name}</b><small>에너지 ${job.energy}</small></div></header>
           <p>${job.copy}</p>
-          <div class="job-meta"><span>시드 ${job.pay[0]}~${job.pay[1]}만원</span><em>${done ? "완료" : "노동"}</em></div>
+          <div class="job-meta"><span>시드 ${payMin}~${payMax}만원 · 자산격차 보정</span><em>${done ? "완료" : "노동"}</em></div>
           <button type="button" data-kind="job" data-id="${job.id}" ${disabled ? "disabled" : ""}>${done ? "오늘 퇴근" : "일하러 가기"}</button>
         </article>
       `;
@@ -7117,7 +7417,7 @@
       state.playDone.add(spec.id);
       if (spec.reward === "cash") {
         if (score >= ACTIVITY_PASS_SCORE) {
-          const cash = Math.round((8 + score * 18) * 10) / 10;
+          const cash = round1((8 + score * 18) * earnedIncomeMultiplier());
           state.cash += cash;
           state.laborIncome += cash;
           toast("🎮", "용돈 획득", `${money(cash)}이 들어왔습니다.`);
@@ -7506,14 +7806,17 @@
     await settlePeriod(key, { manual: true, force: coresLookUnsettled(), claimed: true });
   }
 
-  function showWeekResult(weekProfit, total, dividend) {
+  function showWeekResult(weekProfit, total, dividend, taxResult = {}) {
     els.weekResultLabel.textContent = `S${state.season} · WEEK ${String(state.week).padStart(2, "0")} CLOSED`;
     if (els.weekResultTitle) {
       els.weekResultTitle.textContent = state.week >= MAX_WEEKS ? `시즌 ${state.season} 기본 종목 정산` : "기본 종목 정산 · 이번 교시 주가 공개";
     }
+    const taxCopy = taxResult.collected > 0
+      ? ` 누진 자산세 ${money(taxResult.collected)}${taxResult.sold > 0 ? `(${taxResult.sold}주 자동매각)` : ""}도 반영됐습니다.`
+      : "";
     els.weekSummary.textContent = dividend > 0
-      ? `시장 변동과 함께 ${money(dividend)}의 분기 배당이 반영되었습니다.`
-      : "뉴스·수급·광고가 가격에 반영되었습니다. 매수세는 다음 주를 보장하지 않습니다.";
+      ? `시장 변동과 함께 ${money(dividend)}의 분기 배당이 반영되었습니다.${taxCopy}`
+      : taxCopy || "뉴스·수급·광고가 가격에 반영되었습니다. 매수세는 다음 주를 보장하지 않습니다.";
     els.weekResults.innerHTML = state.assets.map((asset) => {
       const type = asset.lastChange > 0 ? "up" : asset.lastChange < 0 ? "down" : "";
       const extra = asset.playerCompany && asset.opsNote ? `<small>${esc(asset.opsNote)}</small>` : "";

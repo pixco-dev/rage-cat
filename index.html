@@ -181,7 +181,7 @@
             <div class="asset-section-head">
               <div>
                 <h3>대출 시장</h3>
-                <span>학생 대출회사에서 돈을 빌릴 수 있습니다. 상장해서 투자하는 회사가 아닙니다. 이자는 교시가 끝날 때마다 붙고, 금리는 사장이 정합니다. 주식 회사가 있어도 대출회사는 따로 만들 수 있습니다.</span>
+                <span>학생 대출회사에서 순자산의 45% 이내로 빌릴 수 있습니다. 이자는 교시마다 붙고 24시간 안에 갚아야 합니다. 연체하면 현금·본인 회사 지분을 강제 회수하며 부족하면 회사가 상장폐지됩니다.</span>
               </div>
             </div>
             <p class="lend-debt" id="lend-debt" hidden></p>
@@ -244,7 +244,7 @@
           <div class="market-close">
             <div>
               <span>교시가 끝나면 주가가 공개됩니다</span>
-              <p id="close-market-hint">기본 종목은 교시가 끝나면 정산됩니다. 학생 회사도 그 사이 계속 거래할 수 있습니다. 모든 주문에는 0.5% 거래비용이 반영됩니다.</p>
+              <p id="close-market-hint">기본 종목은 교시가 끝나면 정산됩니다. 모든 주문에는 0.5% 거래비용, 이익 매도에는 자산 규모별 0~18% 양도세가 붙고 4주마다 누진 자산세가 정산됩니다.</p>
             </div>
             <button class="ghost-button" id="close-market" type="button">강제 정산 (표준시가 안 맞을 때)</button>
           </div>
@@ -451,7 +451,7 @@
       <button class="modal-x" data-close="borrow" type="button" aria-label="닫기">×</button>
       <span class="overline">LOAN DESK</span>
       <h2 id="borrow-title">대출 받기</h2>
-      <p id="borrow-lead">금리는 대출회사가 정한 비율로, 교시가 끝날 때마다 붙습니다.</p>
+      <p id="borrow-lead">금리는 교시마다 붙습니다. 24시간 연체 시 현금과 본인 회사가 강제 회수될 수 있습니다.</p>
       <form class="found-form" id="borrow-form" novalidate>
         <label>금액 (만원)<input id="borrow-amount" type="number" min="1" step="1" value="40" inputmode="decimal" required></label>
         <p class="form-error" id="borrow-error" hidden></p>
@@ -628,6 +628,6 @@
   <script src="vendor/firebase-app-compat.js?v=10.14.1"></script>
   <script src="vendor/firebase-database-compat.js?v=10.14.1"></script>
   <script src="market-config.js?v=20260903"></script>
-  <script src="game.js?v=20260907reset1"></script>
+  <script src="game.js?v=20260907economy1"></script>
 </body>
 </html>
