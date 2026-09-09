@@ -26,6 +26,10 @@
   const GAMBLE_SETTLE_STORE = "bull-lab-gamble-settled-v2";
   const MIN_GAMBLE_STAKE = 10;
   const GAMBLE_MAX_SEATS = 5;
+  const GAMBLE_PENDING_GRACE_MS = 30000;
+  const GAMBLE_OPEN_TIMEOUT_MS = 10 * 60 * 1000;
+  const GAMBLE_LOCK_TIMEOUT_MS = 60 * 1000;
+  const ACCOUNT_SESSION_FRESH_MS = 55 * 1000;
   const LOTTERY_PATH = "bull-lab/lottery/current";
   const LOTTERY_CLAIM_STORE = "bull-lab-lottery-claim-v2";
   const LOTTERY_BASE_POT = 500;
@@ -56,6 +60,7 @@
   const DEVICE_ACCOUNTS_STORE = "bull-lab-device-accounts-v2";
   const DEVICE_PATH = "bull-lab/devices";
   const ACCOUNT_PATH = "bull-lab/accounts";
+  const ACCOUNT_SESSION_PATH = "bull-lab/gamble/sessionLocks";
   const MAX_DEVICE_ACCOUNTS = 2;
   const WEALTH_SANITY = 50000;
   const FIREBASE_PRESENCE_PATH = "bull-lab/presence";
@@ -75,6 +80,7 @@
   const KST_POLL_MS = 45000;
   const PRESENCE_HEARTBEAT_MS = 20000;
   const PRESENCE_STALE_MS = 70000;
+  const ACCOUNT_SESSION_RENEW_MS = 20000;
   const SETTLEMENT_LOCK_MS = 60000;
   const CHAT_CAP = 50;
   const PUT_DEBOUNCE_MS = 450;
@@ -869,6 +875,8 @@
     kstTimer: null,
     chartTimer: null,
     presenceTimer: null,
+    accountSessionTimer: null,
+    accountSessionHeld: false,
     buildTimer: null,
     touched: new Set(),
     chatRooms: [],
@@ -915,6 +923,8 @@
     gambleTables: {},
     gambleUnsub: null,
     gambleBusy: false,
+    gambleCleanupBusy: false,
+    gambleSettleBusy: false,
     gambleActiveId: "",
     gambleDailyClaim: null,
     lottery: null,
@@ -1292,6 +1302,20 @@
     } catch { /* quota */ }
   }
 
+  async function settleGambleOnce(key, apply) {
+    if (!key || readGambleSettled()[key]) return false;
+    const run = async () => {
+      if (readGambleSettled()[key]) return false;
+      apply();
+      markGambleSettled(key);
+      return true;
+    };
+    if (navigator.locks?.request) {
+      return navigator.locks.request(`bull-lab-gamble:${key}`, { mode: "exclusive" }, run);
+    }
+    return run();
+  }
+
   function gambleSpendableCash() {
     if (!state) return 0;
     return Math.max(0, round1(state.cash));
@@ -1345,6 +1369,7 @@
   function gambleUseFromTables(playerId = state?.playerId, day = gambleDayKey()) {
     if (!playerId) return null;
     for (const table of Object.values(worldSync.gambleTables || {})) {
+      if (!table || table.status === "cancelled") continue;
       const seat = seatOnTable(table, playerId);
       if (!seat) continue;
       const joinedAt = Number(seat.joinedAt || table.createdAt) || 0;
@@ -1375,6 +1400,17 @@
       if (!response.ok) return null;
       const row = await response.json();
       worldSync.gambleDailyClaim = row && typeof row === "object" ? row : null;
+      if (worldSync.gambleDailyClaim?.tableId) {
+        const age = Date.now() - (Number(worldSync.gambleDailyClaim.claimedAt) || 0);
+        if (age >= GAMBLE_PENDING_GRACE_MS) {
+          const tableResponse = await firebaseRestRequest(gambleTablePath(worldSync.gambleDailyClaim.tableId), {}, FIREBASE_READ_TIMEOUT_MS);
+          const table = tableResponse.ok ? await tableResponse.json() : null;
+          if (!table || table.status === "cancelled" || !seatOnTable(table, state.playerId)) {
+            await releaseDailyGambleClaim(worldSync.gambleDailyClaim.tableId);
+            return null;
+          }
+        }
+      }
       return worldSync.gambleDailyClaim;
     } catch {
       return null;
@@ -1481,7 +1517,67 @@
     });
     worldSync.gambleTables = next;
     tryApplyGambleSettlements();
+    cleanupStaleGambleTables();
     if (els.gambleModal && !els.gambleModal.hidden) renderGambleModal();
+  }
+
+  function staleGambleReason(table, now = Date.now()) {
+    if (!table) return "";
+    const age = now - (Number(table.updatedAt || table.createdAt) || 0);
+    if (table.status === "open" && age >= GAMBLE_OPEN_TIMEOUT_MS) return "모집 시간이 지나 자동 취소되었습니다.";
+    if ((table.status === "locked" || table.status === "reveal") && age >= GAMBLE_LOCK_TIMEOUT_MS) return "진행이 멈춰 자동 취소되었습니다.";
+    return "";
+  }
+
+  async function cancelStaleGambleTable(tableId) {
+    const db = firebaseDb();
+    const now = Date.now();
+    const makeCancelled = (current) => {
+      const reason = staleGambleReason(current, now);
+      if (!reason) return null;
+      return {
+        ...current,
+        status: "cancelled",
+        updatedAt: now,
+        result: { summary: `${reason} 참가비를 모두 돌려줍니다.`, refundAll: true },
+      };
+    };
+    try {
+      if (db) {
+        const result = await db.ref(gambleTablePath(tableId)).transaction((current) => makeCancelled(current) || undefined, undefined, false);
+        return result.committed ? result.snapshot.val() : null;
+      }
+      const path = gambleTablePath(tableId);
+      const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+      if (!read.ok) return null;
+      const current = await read.json();
+      const cancelled = makeCancelled(current);
+      if (!cancelled) return null;
+      const headers = { "Content-Type": "application/json" };
+      const etag = read.headers.get("ETag");
+      if (etag) headers["If-Match"] = etag;
+      const write = await firebaseRestRequest(path, { method: "PUT", headers, body: JSON.stringify(cancelled) });
+      return write.ok ? cancelled : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function cleanupStaleGambleTables() {
+    if (worldSync.gambleCleanupBusy) return;
+    const stale = Object.values(worldSync.gambleTables || {}).filter((table) => staleGambleReason(table));
+    if (!stale.length) return;
+    worldSync.gambleCleanupBusy = true;
+    try {
+      for (const table of stale) {
+        const cancelled = await cancelStaleGambleTable(table.id);
+        if (cancelled) worldSync.gambleTables[table.id] = cancelled;
+      }
+      tryApplyGambleSettlements();
+      if (els.gambleModal && !els.gambleModal.hidden) renderGambleModal();
+    } finally {
+      worldSync.gambleCleanupBusy = false;
+    }
   }
 
   function subscribeGamble() {
@@ -1769,6 +1865,10 @@
       toast("🎲", "만원", "자리가 없습니다.");
       return;
     }
+    if (gambleSpendableCash() + 1e-9 < Number(table.stake || 0)) {
+      toast("🎲", "현금 부족", "보유 현금이 바이인보다 적습니다. 오늘 이용 횟수는 차감되지 않았습니다.");
+      return;
+    }
     worldSync.gambleBusy = true;
     let paid = null;
     const now = Date.now();
@@ -1821,8 +1921,6 @@
     worldSync.gambleBusy = true;
     try {
       if (table.hostId === state.playerId) {
-        markGambleSettled(`${tableId}:refund:${state.playerId}`);
-        refundGambleStake(me.stake);
         const cancelled = {
           ...table,
           status: "cancelled",
@@ -1835,14 +1933,19 @@
         const ok = await putGambleTable(cancelled);
         if (!ok) throw new Error("put");
         worldSync.gambleTables[tableId] = cancelled;
+        markGambleSettled(`${tableId}:refund:${state.playerId}`);
+        refundGambleStake(me.stake);
+        await releaseDailyGambleClaim(tableId);
         toast("🎲", "데스크 닫힘", "바이인을 돌려받았습니다.");
       } else {
-        refundGambleStake(me.stake);
         const nextSeats = { ...(table.seats || {}) };
         delete nextSeats[safeFbKey(state.playerId)];
         delete nextSeats[state.playerId];
-        await patchGambleTable(tableId, { seats: nextSeats, updatedAt: Date.now() });
+        const ok = await patchGambleTable(tableId, { seats: nextSeats, updatedAt: Date.now() });
+        if (!ok) throw new Error("patch");
         table.seats = nextSeats;
+        refundGambleStake(me.stake);
+        await releaseDailyGambleClaim(tableId);
         toast("🎲", "나감", "바이인을 돌려받았습니다.");
       }
       worldSync.gambleActiveId = "";
@@ -1932,33 +2035,37 @@
     }
   }
 
-  function tryApplyGambleSettlements() {
-    if (!state?.active || !session?.id) return;
+  async function tryApplyGambleSettlements() {
+    if (!state?.active || !session?.id || worldSync.gambleSettleBusy) return;
+    worldSync.gambleSettleBusy = true;
     const me = state.playerId;
-    Object.values(worldSync.gambleTables || {}).forEach((table) => {
-      if (!table?.id) return;
-      const seat = seatOnTable(table, me);
-      if (!seat) return;
+    try {
+      for (const table of Object.values(worldSync.gambleTables || {})) {
+        if (!table?.id) continue;
+        const seat = seatOnTable(table, me);
+        if (!seat) continue;
 
-      if (table.status === "cancelled" && table.result?.refundAll) {
-        const key = `${table.id}:refund:${me}`;
-        if (readGambleSettled()[key]) return;
-        refundGambleStake(seat.stake);
-        markGambleSettled(key);
-        toast("🎲", "환불", "데스크가 닫혀 바이인을 돌려받았습니다.");
-        return;
+        if (table.status === "cancelled" && table.result?.refundAll) {
+          const key = `${table.id}:refund:${me}`;
+          const applied = await settleGambleOnce(key, () => refundGambleStake(seat.stake));
+          if (applied) toast("🎲", "환불", "데스크가 닫혀 바이인을 돌려받았습니다.");
+          continue;
+        }
+
+        if (table.status !== "done" || !table.result) continue;
+        const key = `${table.id}:payout:${me}`;
+        const pay = round1(Number(table.result.payouts?.[me]) || 0);
+        const applied = await settleGambleOnce(key, () => {
+          if (pay > 0) creditGambleWin(pay);
+        });
+        if (!applied) continue;
+        const won = (table.result.winners || []).includes(me);
+        toast("🎲", won ? "몰빵 승" : (pay > 0 ? "무승부 환불" : "몰빵 패"), table.result.summary || "");
+        if (won) tone(660, .12, "square");
       }
-
-      if (table.status !== "done" || !table.result) return;
-      const key = `${table.id}:payout:${me}`;
-      if (readGambleSettled()[key]) return;
-      const pay = round1(Number(table.result.payouts?.[me]) || 0);
-      if (pay > 0) creditGambleWin(pay);
-      markGambleSettled(key);
-      const won = (table.result.winners || []).includes(me);
-      toast("🎲", won ? "몰빵 승" : (pay > 0 ? "무승부 환불" : "몰빵 패"), table.result.summary || "");
-      if (won) tone(660, .12, "square");
-    });
+    } finally {
+      worldSync.gambleSettleBusy = false;
+    }
   }
 
   function onGambleClick(event) {
@@ -4886,7 +4993,7 @@
     /* 500 AI traders are aggregated on demand and never create player or Firebase rows. */
   }
 
-  function stopWorldSync() {
+  function stopWorldSync(options = {}) {
     unsubscribeWorld();
     unsubscribeBans();
     stopPresence();
@@ -4895,6 +5002,7 @@
     if (worldSync.kstTimer) clearInterval(worldSync.kstTimer);
     if (worldSync.chartTimer) clearInterval(worldSync.chartTimer);
     if (worldSync.presenceTimer) clearInterval(worldSync.presenceTimer);
+    if (worldSync.accountSessionTimer) clearInterval(worldSync.accountSessionTimer);
     if (worldSync.buildTimer) clearInterval(worldSync.buildTimer);
     if (worldSync.putTimer) clearTimeout(worldSync.putTimer);
     if (worldSync.renderTimer) clearTimeout(worldSync.renderTimer);
@@ -4903,10 +5011,15 @@
     worldSync.kstTimer = null;
     worldSync.chartTimer = null;
     worldSync.presenceTimer = null;
+    worldSync.accountSessionTimer = null;
     worldSync.buildTimer = null;
     worldSync.putTimer = null;
     worldSync.renderTimer = null;
     worldSync.renderFullPending = false;
+    if (!options.keepAccountSession && worldSync.accountSessionHeld) {
+      worldSync.accountSessionHeld = false;
+      releaseAccountSession();
+    }
   }
 
   function kstNowMs() {
@@ -5552,6 +5665,80 @@
     return rows;
   }
 
+  function accountSessionPath(playerId = session?.id || state?.playerId) {
+    return `${ACCOUNT_SESSION_PATH}/${safeFbKey(playerId || "")}`;
+  }
+
+  async function claimAccountSession() {
+    const playerId = session?.id || state?.playerId;
+    if (!playerId) return false;
+    const now = Date.now();
+    const claim = { playerId, clientId, updatedAt: now, expiresAt: now + ACCOUNT_SESSION_FRESH_MS };
+    const db = firebaseDb();
+    try {
+      if (db) {
+        const result = await db.ref(accountSessionPath(playerId)).transaction((current) => {
+          if (current?.clientId && current.clientId !== clientId && Number(current.expiresAt || 0) > now) return;
+          return claim;
+        }, undefined, false);
+        worldSync.accountSessionHeld = !!result.committed && result.snapshot.val()?.clientId === clientId;
+        return worldSync.accountSessionHeld;
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const path = accountSessionPath(playerId);
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return false;
+        const current = await read.json();
+        if (current?.clientId && current.clientId !== clientId && Number(current.expiresAt || 0) > now) return false;
+        const headers = { "Content-Type": "application/json" };
+        const etag = read.headers.get("ETag");
+        if (etag) headers["If-Match"] = etag;
+        const write = await firebaseRestRequest(path, { method: "PUT", headers, body: JSON.stringify(claim) });
+        if (write.status === 412) continue;
+        worldSync.accountSessionHeld = write.ok;
+        return write.ok;
+      }
+    } catch {
+      worldSync.accountSessionHeld = false;
+    }
+    return false;
+  }
+
+  async function releaseAccountSession() {
+    const playerId = session?.id || state?.playerId;
+    if (!playerId) return;
+    const db = firebaseDb();
+    try {
+      if (db) {
+        await db.ref(accountSessionPath(playerId)).transaction((current) => current?.clientId === clientId ? null : undefined, undefined, false);
+      } else {
+        const path = accountSessionPath(playerId);
+        const read = await firebaseRestRequest(path, { headers: { "X-Firebase-ETag": "true" } });
+        if (!read.ok) return;
+        const current = await read.json();
+        if (current?.clientId !== clientId) return;
+        const headers = {};
+        const etag = read.headers.get("ETag");
+        if (etag) headers["If-Match"] = etag;
+        await firebaseRestRequest(path, { method: "DELETE", headers });
+      }
+    } catch {
+      /* the short lease expires automatically */
+    }
+  }
+
+  async function renewAccountSession() {
+    if (!worldSync.accountSessionHeld || !state?.active) return;
+    const held = await claimAccountSession();
+    if (held) return;
+    worldSync.inMarket = false;
+    state.active = false;
+    stopWorldSync();
+    hideDesk();
+    renderStartCta();
+    toast("⚠️", "중복 접속 차단", "같은 계정이 다른 창에서 접속해 이 창의 거래를 중지했습니다.");
+  }
+
   function presenceRestPath() {
     if (!state?.playerId) return "";
     return `${FIREBASE_PRESENCE_PATH}/${safeFbKey(state.playerId)}/${safeFbKey(clientId)}`;
@@ -5938,6 +6125,8 @@
     await maybeSettleFromClock();
     if (state?.active) {
       await enforceOverdueLoans();
+      cleanupStaleGambleTables();
+      tryApplyGambleSettlements();
       renderLenders();
       maybeSettleLottery();
       tryClaimLotteryWin();
@@ -5945,12 +6134,13 @@
   }
 
   function startWorldLoop() {
-    stopWorldSync();
+    stopWorldSync({ keepAccountSession: true });
     subscribeWorld();
     subscribeBans();
     subscribeHalt();
     subscribeClimate();
     startPresence();
+    worldSync.accountSessionTimer = setInterval(renewAccountSession, ACCOUNT_SESSION_RENEW_MS);
     worldSync.pollTimer = setInterval(() => {
       if (!worldSync.connected && !document.hidden) pullWorld();
     }, POLL_MS);
@@ -6018,6 +6208,11 @@
         renderAll();
         els.game.scrollIntoView({ behavior: "smooth", block: "start" });
         toast("📈", "거래 중", "이미 시장에 들어가 있습니다. 지금 사고팔 수 있습니다.");
+        return;
+      }
+      if (!(await claimAccountSession())) {
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "같은 계정이 다른 창이나 기기에서 거래 중입니다.";
+        toast("⚠️", "중복 접속 차단", "잔액 보호를 위해 한 계정은 한 창에서만 거래할 수 있습니다. 다른 창을 닫고 약 1분 뒤 다시 시도하세요.");
         return;
       }
       if (els.lobbyStatus) els.lobbyStatus.textContent = "시장에 들어가는 중… 이 화면이 닫히면 거래가 시작된 것입니다.";
