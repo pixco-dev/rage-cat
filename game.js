@@ -37,7 +37,11 @@
   const LOTTERY_BASE_POT = 500;
   const LOTTERY_TICKET_PRICE = 100;
   const LOTTERY_MAX_TICKETS = 2;
-  const LOTTERY_SPECIAL_MAX_TICKETS = 3;
+  const LOTTERY_SPECIAL_TYPES = [
+    { id: "lotto-a", name: "A 복권" },
+    { id: "lotto-b", name: "B 복권" },
+    { id: "lotto-c", name: "C 복권" },
+  ];
   const LOTTERY_CLAIM_LOCK_MS = 120000;
   const PROMO_DESK_STORE = "bull-lab-promo-desk-v2";
   const AI_TRADER_COUNT = 500;
@@ -814,8 +818,10 @@
     lotteryButton: $("#lottery-button"),
     lotteryModal: $("#lottery-modal"),
     lotteryStatus: $("#lottery-status"),
+    lotteryLead: $("#lottery-lead"),
     lotteryPotValue: $("#lottery-pot-value"),
     lotteryDrawLabel: $("#lottery-draw-label"),
+    lotterySpecialOptions: $("#lottery-special-options"),
     lotteryMine: $("#lottery-mine"),
     lotteryBuy: $("#lottery-buy"),
     lotteryForce: $("#lottery-force"),
@@ -2117,8 +2123,17 @@
     return lotteryTicketList(row).filter((t) => t.playerId === playerId);
   }
 
-  function lotteryTicketLimit(row) {
-    return row?.specialDraw ? LOTTERY_SPECIAL_MAX_TICKETS : LOTTERY_MAX_TICKETS;
+  function lotterySpecialType(typeId) {
+    return LOTTERY_SPECIAL_TYPES.find((type) => type.id === typeId) || null;
+  }
+
+  function lotteryTypePot(row, typeId) {
+    return Math.max(LOTTERY_BASE_POT, round1(Number(row?.pots?.[typeId]) || LOTTERY_BASE_POT));
+  }
+
+  function lotteryTotalPot(row) {
+    if (!row?.specialDraw) return Math.max(LOTTERY_BASE_POT, round1(Number(row?.pot) || LOTTERY_BASE_POT));
+    return round1(LOTTERY_SPECIAL_TYPES.reduce((sum, type) => sum + lotteryTypePot(row, type.id), 0));
   }
 
   function lotteryRoundOpen(row) {
@@ -2246,8 +2261,20 @@
         playerId: String(t.playerId || ""),
         playerName: String(t.playerName || t.playerId || ""),
         boughtAt: Number(t.boughtAt) || 0,
+        lotteryType: String(t.lotteryType || ""),
       };
     });
+    if (row.specialDraw) {
+      const usedByPlayer = new Map();
+      Object.values(tickets).forEach((ticket) => {
+        const used = usedByPlayer.get(ticket.playerId) || new Set();
+        let type = lotterySpecialType(ticket.lotteryType);
+        if (!type || used.has(type.id)) type = LOTTERY_SPECIAL_TYPES.find((candidate) => !used.has(candidate.id)) || LOTTERY_SPECIAL_TYPES[0];
+        ticket.lotteryType = type.id;
+        used.add(type.id);
+        usedByPlayer.set(ticket.playerId, used);
+      });
+    }
     const pendingPays = {};
     Object.entries(row.pendingPays || {}).forEach(([key, pay]) => {
       const normalized = normalizeLotteryPay(pay, key);
@@ -2263,7 +2290,8 @@
     return {
       drawId: String(row.drawId || ""),
       drawAt: Number(row.drawAt) || 0,
-      pot: Math.max(LOTTERY_BASE_POT, round1(Number(row.pot) || LOTTERY_BASE_POT)),
+      pot: row.specialDraw ? lotteryTotalPot(row) : Math.max(LOTTERY_BASE_POT, round1(Number(row.pot) || LOTTERY_BASE_POT)),
+      pots: row.specialDraw ? Object.fromEntries(LOTTERY_SPECIAL_TYPES.map((type) => [type.id, lotteryTypePot(row, type.id)])) : {},
       tickets,
       status: row.status === "paid" || row.status === "drawing" ? row.status : "open",
       winnerId: String(row.winnerId || ""),
@@ -2418,33 +2446,48 @@
     const row = worldSync.lottery;
     const tickets = lotteryTicketList(row);
     const mine = myLotteryTickets(row);
-    const ticketLimit = lotteryTicketLimit(row);
-    const pot = row ? round1(row.pot) : LOTTERY_BASE_POT;
+    const pot = row ? lotteryTotalPot(row) : LOTTERY_BASE_POT;
+    if (els.lotteryLead) {
+      els.lotteryLead.textContent = row?.specialDraw
+        ? "오늘만 A·B·C 복권을 따로 판매합니다. 종류마다 장당 100만원, 1인 1장씩 살 수 있고 오후 4시에 각각 한 명을 뽑습니다."
+        : "기본 상금 500만원에서 시작합니다. 장당 100만원이며, 산 금액만큼 상금에 더해집니다. 한 사람 최대 2장. 산 다음날 아침 8시 25분에 구매자 중 한 명이 전액을 받습니다.";
+    }
     if (els.lotteryPotValue) els.lotteryPotValue.textContent = money(pot);
     if (els.lotteryDrawLabel) {
       const payYmd = lotteryPayYmd(row);
       els.lotteryDrawLabel.textContent = row?.drawId
         ? (row.specialDraw
-          ? `오늘 특별 추첨 16:00 · 구매 마감 16:00 · 현재 ${tickets.length}장`
+          ? `오늘 특별 추첨 16:00 · A·B·C 각각 1명 당첨 · 현재 총 ${tickets.length}장`
           : `이번 회차 지급 ${payYmd || "다음날"} 08:25 · 현재 ${tickets.length}장`)
         : "회차 준비 중";
     }
     if (els.lotteryStatus) {
       els.lotteryStatus.textContent = mine.length
-        ? `내 복권 ${mine.length}/${ticketLimit}장 · ${row?.specialDraw ? "오늘 16:00 추첨" : "지급은 산 다음날 08:25"}`
-        : `1인 최대 ${ticketLimit}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`;
+        ? `내 복권 ${mine.length}장 · ${row?.specialDraw ? "종류별 1장, 오늘 16:00 추첨" : "지급은 산 다음날 08:25"}`
+        : (row?.specialDraw ? "A·B·C를 각각 1장씩 구매할 수 있습니다." : `1인 최대 ${LOTTERY_MAX_TICKETS}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`);
     }
     if (els.lotteryMine) {
       els.lotteryMine.innerHTML = mine.length
-        ? `<ul class="lottery-ticket-list">${mine.map((t, i) => `<li>내 복권 ${i + 1} · ${esc(t.id)}</li>`).join("")}</ul>`
+        ? `<ul class="lottery-ticket-list">${mine.map((t, i) => `<li>${row?.specialDraw ? esc(lotterySpecialType(t.lotteryType)?.name || "특별 복권") : `내 복권 ${i + 1}`} · ${esc(t.id)}</li>`).join("")}</ul>`
         : `<p class="lottery-empty">아직 산 복권이 없습니다.</p>`;
+    }
+    if (els.lotterySpecialOptions) {
+      els.lotterySpecialOptions.hidden = !row?.specialDraw;
+      els.lotterySpecialOptions.innerHTML = row?.specialDraw ? LOTTERY_SPECIAL_TYPES.map((type) => {
+        const typeTickets = tickets.filter((ticket) => ticket.lotteryType === type.id);
+        const owned = mine.some((ticket) => ticket.lotteryType === type.id);
+        const now = kstClock.ok ? kstNowMs() : Date.now();
+        const disabled = worldSync.lotteryBusy || owned || !lotteryRoundOpen(row) || now >= Number(row.drawAt || 0) || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
+        return `<article><b>${esc(type.name)}</b><strong>${money(lotteryTypePot(row, type.id))}</strong><small>${typeTickets.length}장 참여</small><button type="button" data-lottery-type="${esc(type.id)}" ${disabled ? "disabled" : ""}>${owned ? "구매 완료" : `1장 구매 · ${money(LOTTERY_TICKET_PRICE)}`}</button></article>`;
+      }).join("") : "";
     }
     if (els.lotteryBuy) {
       const now = kstClock.ok ? kstNowMs() : Date.now();
       const drawDue = !!row?.drawAt && now >= Number(row.drawAt);
-      els.lotteryBuy.disabled = !row || !lotteryRoundOpen(row) || drawDue || mine.length >= ticketLimit || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
-      els.lotteryBuy.textContent = mine.length >= ticketLimit
-        ? `최대 ${ticketLimit}장까지`
+      els.lotteryBuy.hidden = !!row?.specialDraw;
+      els.lotteryBuy.disabled = !row || !lotteryRoundOpen(row) || drawDue || mine.length >= LOTTERY_MAX_TICKETS || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
+      els.lotteryBuy.textContent = mine.length >= LOTTERY_MAX_TICKETS
+        ? `최대 ${LOTTERY_MAX_TICKETS}장까지`
         : `복권 1장 사기 (${money(LOTTERY_TICKET_PRICE)}) →`;
     }
     if (els.lotteryLast) {
@@ -2469,7 +2512,7 @@
     els.lotteryError.textContent = msg;
   }
 
-  async function buyLotteryTicket() {
+  async function buyLotteryTicket(requestedType = "") {
     if (worldSync.lotteryBusy || isServerStopped() || !state?.active) return;
     setLotteryError("");
     if (round1(state.cash) < LOTTERY_TICKET_PRICE) {
@@ -2491,15 +2534,24 @@
           if (!lotteryRoundOpen(row)) return;
           if (ts >= Number(row.drawAt || 0)) return;
           const mine = myLotteryTickets(row, state.playerId);
-          if (mine.length >= lotteryTicketLimit(row)) return;
+          const type = row.specialDraw ? lotterySpecialType(String(requestedType || "")) : null;
+          if (row.specialDraw && (!type || mine.some((ticket) => ticket.lotteryType === type.id))) return;
+          if (!row.specialDraw && mine.length >= LOTTERY_MAX_TICKETS) return;
           row.tickets = row.tickets || {};
           row.tickets[safeFbKey(ticketId)] = {
             id: ticketId,
             playerId: state.playerId,
             playerName: state.playerName,
             boughtAt: now,
+            lotteryType: type?.id || "",
           };
-          row.pot = round1(Math.max(LOTTERY_BASE_POT, Number(row.pot) || LOTTERY_BASE_POT) + LOTTERY_TICKET_PRICE);
+          if (row.specialDraw) {
+            row.pots = row.pots || {};
+            row.pots[type.id] = round1(lotteryTypePot(row, type.id) + LOTTERY_TICKET_PRICE);
+            row.pot = lotteryTotalPot(row);
+          } else {
+            row.pot = round1(Math.max(LOTTERY_BASE_POT, Number(row.pot) || LOTTERY_BASE_POT) + LOTTERY_TICKET_PRICE);
+          }
           row.updatedAt = now;
           row.status = row.specialDraw ? "drawing" : "open";
           return row;
@@ -2509,10 +2561,12 @@
         else {
           const snap = normalizeLottery(result.snapshot.val());
           const mine = myLotteryTickets(snap, state.playerId);
-          const ticketLimit = lotteryTicketLimit(snap);
+          const type = snap?.specialDraw ? lotterySpecialType(String(requestedType || "")) : null;
           const ts = kstClock.ok ? kstNowMs() : Date.now();
-          setLotteryError(mine.length >= ticketLimit
-            ? `한 사람당 최대 ${ticketLimit}장입니다.`
+          setLotteryError(snap?.specialDraw && type && mine.some((ticket) => ticket.lotteryType === type.id)
+            ? `${type.name}은 이미 구매했습니다.`
+            : (!snap?.specialDraw && mine.length >= LOTTERY_MAX_TICKETS)
+              ? `한 사람당 최대 ${LOTTERY_MAX_TICKETS}장입니다.`
             : (snap?.drawAt && ts >= Number(snap.drawAt) ? "추첨 처리 중입니다. 잠시 후 새 회차에서 구매하세요." : "지금은 살 수 없습니다."));
         }
       } else {
@@ -2523,7 +2577,10 @@
         writeWallet();
         queuePush();
         renderSummary();
-        toast("🎟️", "복권 구매", `100만원을 넣고 상금이 ${money(worldSync.lottery?.pot || 0)}가 되었습니다.`);
+        const type = worldSync.lottery?.specialDraw ? lotterySpecialType(String(requestedType || "")) : null;
+        toast("🎟️", "복권 구매", type
+          ? `${type.name}을 샀습니다. 현재 상금 ${money(lotteryTypePot(worldSync.lottery, type.id))}`
+          : `100만원을 넣고 상금이 ${money(worldSync.lottery?.pot || 0)}가 되었습니다.`);
         renderLotteryModal();
       }
     } catch {
@@ -2577,20 +2634,36 @@
           delete nextCurrent.pendingPays;
           return { ...(root || {}), current: nextCurrent };
         }
-        const winner = pickLotteryWinner(tickets, `${cur.drawId}|${cur.drawAt}|${tickets.length}`);
-        const amount = round1(Number(cur.pot) || LOTTERY_BASE_POT);
-        const pay = {
-          drawId: cur.drawId,
-          playerId: winner.playerId,
-          playerName: winner.playerName || winner.playerId,
-          amount,
-          at: Date.now(),
-          status: "pending",
-          owner: "",
-          claimedAt: 0,
-          paidAt: 0,
-        };
-        const payKey = lotteryPayKey(pay);
+        const wins = [];
+        if (cur.specialDraw) {
+          LOTTERY_SPECIAL_TYPES.forEach((type) => {
+            const typeTickets = tickets.filter((ticket) => ticket.lotteryType === type.id);
+            const winner = pickLotteryWinner(typeTickets, `${cur.drawId}|${type.id}|${cur.drawAt}|${typeTickets.length}`);
+            if (winner) wins.push({ type, winner, amount: lotteryTypePot(cur, type.id) });
+          });
+        } else {
+          const winner = pickLotteryWinner(tickets, `${cur.drawId}|${cur.drawAt}|${tickets.length}`);
+          if (winner) wins.push({ type: null, winner, amount: round1(Number(cur.pot) || LOTTERY_BASE_POT) });
+        }
+        if (!wins.length) return;
+        const newPayouts = {};
+        wins.forEach(({ type, winner, amount }) => {
+          const pay = {
+            drawId: type ? `${cur.drawId}-${type.id}` : cur.drawId,
+            playerId: winner.playerId,
+            playerName: winner.playerName || winner.playerId,
+            amount,
+            at: Date.now(),
+            status: "pending",
+            owner: "",
+            claimedAt: 0,
+            paidAt: 0,
+          };
+          const payKey = lotteryPayKey(pay);
+          newPayouts[payKey] = { ...pay, id: payKey };
+        });
+        const winnerNames = wins.map(({ type, winner }) => `${type ? `${type.name} ` : ""}${winner.playerName || winner.playerId}`).join(" · ");
+        const totalWinAmount = round1(wins.reduce((sum, win) => sum + win.amount, 0));
         const nextCurrent = {
           drawId: nextTarget.drawId,
           drawAt: nextTarget.drawAt,
@@ -2600,9 +2673,9 @@
           winnerId: "",
           winnerName: "",
           winAmount: 0,
-          lastWinnerId: winner.playerId,
-          lastWinnerName: winner.playerName || winner.playerId,
-          lastWinAmount: amount,
+          lastWinnerId: wins.length === 1 ? wins[0].winner.playerId : `multi:${cur.drawId}`,
+          lastWinnerName: winnerNames,
+          lastWinAmount: totalWinAmount,
           lastDrawId: cur.drawId,
           updatedAt: Date.now(),
         };
@@ -2611,7 +2684,7 @@
           current: nextCurrent,
           payouts: {
             ...(root?.payouts || {}),
-            [payKey]: { ...pay, id: payKey },
+            ...newPayouts,
           },
         };
       }, undefined, false);
@@ -8836,7 +8909,11 @@
     closeDeskPromo();
     openLotteryModal();
   });
-  els.lotteryBuy?.addEventListener("click", buyLotteryTicket);
+  els.lotteryBuy?.addEventListener("click", () => buyLotteryTicket());
+  els.lotterySpecialOptions?.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-lottery-type]");
+    if (button) buyLotteryTicket(button.getAttribute("data-lottery-type") || "");
+  });
   els.lotteryForce?.addEventListener("click", forceLotteryDraw);
   els.gambleCreateForm?.addEventListener("submit", createGambleTable);
   els.gambleModal?.addEventListener("click", onGambleClick);

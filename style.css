@@ -3337,6 +3337,64 @@ body.modal-open {
   margin: 0 0 14px;
 }
 
+.lottery-special-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.lottery-special-options[hidden] {
+  display: none;
+}
+
+.lottery-special-options article {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #fbfaf3;
+}
+
+.lottery-special-options b,
+.lottery-special-options small {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.lottery-special-options strong {
+  color: var(--red);
+  font-family: "Song Myung", serif;
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.lottery-special-options small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.lottery-special-options button {
+  min-height: 40px;
+  padding: 8px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--white);
+  cursor: pointer;
+}
+
+.lottery-special-options button:disabled {
+  border-color: var(--line);
+  background: #e6e3d8;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .lottery-special-options {
+    grid-template-columns: 1fr;
+  }
+}
+
 .lottery-ticket-list {
   display: grid;
   gap: 6px;
