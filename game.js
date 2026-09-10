@@ -33,6 +33,8 @@
   const LOTTERY_ROOT_PATH = "bull-lab/lottery";
   const LOTTERY_PATH = `${LOTTERY_ROOT_PATH}/current`;
   const LOTTERY_PAYOUTS_PATH = `${LOTTERY_ROOT_PATH}/payouts`;
+  const LOTTERY_REFUNDS_PATH = `${LOTTERY_ROOT_PATH}/refunds`;
+  const LOTTERY_ADMIN_HASH = "a2447a004dc35660272e88bc2db11a68c1b9e6806b0e5bcaabf31c0717ae71d0";
   const LOTTERY_CLAIM_STORE = "bull-lab-lottery-claim-v2";
   const LOTTERY_BASE_POT = 500;
   const LOTTERY_TICKET_PRICE = 100;
@@ -823,6 +825,7 @@
     lotteryDrawLabel: $("#lottery-draw-label"),
     lotterySpecialOptions: $("#lottery-special-options"),
     lotteryMine: $("#lottery-mine"),
+    lotteryBuyers: $("#lottery-buyers"),
     lotteryBuy: $("#lottery-buy"),
     lotteryForce: $("#lottery-force"),
     lotteryError: $("#lottery-error"),
@@ -941,6 +944,10 @@
     lotteryUnsub: null,
     lotteryPayouts: {},
     lotteryPayoutUnsub: null,
+    lotteryBuyerLinks: {},
+    lotteryRosterLoading: false,
+    lotteryAdmin: false,
+    lotteryAdminChecked: false,
     lotteryBusy: false,
     lotterySettleBusy: false,
     lotteryClaimBusy: false,
@@ -2268,6 +2275,9 @@
         playerName: String(t.playerName || t.playerId || ""),
         boughtAt: Number(t.boughtAt) || 0,
         lotteryType: String(t.lotteryType || ""),
+        status: t.status === "canceling" ? "canceling" : "active",
+        cancelOwner: t.status === "canceling" ? String(t.cancelOwner || "") : "",
+        cancelAt: t.status === "canceling" ? Number(t.cancelAt) || 0 : 0,
       };
     });
     if (row.specialDraw) {
@@ -2448,11 +2458,65 @@
       els.lotteryError.textContent = "";
     }
     if (els.lotteryForce) els.lotteryForce.hidden = !staffTestRequested();
+    verifyLotteryAdminAccess().then((allowed) => {
+      if (allowed) loadLotteryBuyerLinks();
+      renderLotteryModal();
+    });
     ensureLotteryRound().then(() => {
       renderLotteryModal();
       maybeSettleLottery();
     });
     openModal(els.lotteryModal);
+  }
+
+  async function verifyLotteryAdminAccess() {
+    if (worldSync.lotteryAdminChecked) return worldSync.lotteryAdmin;
+    worldSync.lotteryAdminChecked = true;
+    try {
+      const token = new URLSearchParams(location.search).get("lottery-admin") || "";
+      if (!token) return false;
+      const digest = await sha256Digest(new TextEncoder().encode(token));
+      worldSync.lotteryAdmin = bufToHex(digest) === LOTTERY_ADMIN_HASH;
+    } catch {
+      worldSync.lotteryAdmin = false;
+    }
+    return worldSync.lotteryAdmin;
+  }
+
+  async function loadLotteryBuyerLinks() {
+    if (!worldSync.lotteryAdmin || worldSync.lotteryRosterLoading) return;
+    worldSync.lotteryRosterLoading = true;
+    try {
+      const response = await firebaseRestRequest(DEVICE_PATH, {}, FIREBASE_READ_TIMEOUT_MS);
+      if (!response.ok) return;
+      const devices = await response.json();
+      const links = {};
+      Object.values(devices || {}).forEach((device) => {
+        const accounts = Object.values(device?.accounts || {}).filter((account) => account?.id);
+        accounts.forEach((account) => {
+          links[account.id] = accounts
+            .filter((other) => other.id !== account.id)
+            .map((other) => ({ id: other.id, name: String(other.nick || other.id) }));
+        });
+      });
+      worldSync.lotteryBuyerLinks = links;
+      if (els.lotteryModal && !els.lotteryModal.hidden) renderLotteryModal();
+    } catch {
+      /* buyer list still works without device-link labels */
+    } finally {
+      worldSync.lotteryRosterLoading = false;
+    }
+  }
+
+  function lotteryBuyerRow(ticket, buyerIds) {
+    const linked = (worldSync.lotteryBuyerLinks[ticket.playerId] || []).filter((account) => buyerIds.has(account.id));
+    const accountLabel = ticket.playerName && ticket.playerName !== ticket.playerId
+      ? `${ticket.playerName} (@${ticket.playerId})`
+      : `@${ticket.playerId}`;
+    const linkText = linked.length
+      ? `<em>같은 기기 구매: ${linked.map((account) => esc(account.name && account.name !== account.id ? `${account.name} (@${account.id})` : `@${account.id}`)).join(", ")}</em>`
+      : "";
+    return `<li><span>${esc(accountLabel)}</span>${linkText}</li>`;
   }
 
   function renderLotteryModal() {
@@ -2483,8 +2547,24 @@
     }
     if (els.lotteryMine) {
       els.lotteryMine.innerHTML = mine.length
-        ? `<ul class="lottery-ticket-list">${mine.map((t, i) => `<li>${row?.specialDraw ? esc(lotterySpecialType(t.lotteryType)?.name || "특별 복권") : `내 복권 ${i + 1}`} · ${esc(t.id)}</li>`).join("")}</ul>`
+        ? `<ul class="lottery-ticket-list">${mine.map((t, i) => `<li><span>${row?.specialDraw ? esc(lotterySpecialType(t.lotteryType)?.name || "특별 복권") : `내 복권 ${i + 1}`} · ${esc(t.id)}</span><button type="button" data-lottery-cancel="${esc(t.id)}" ${worldSync.lotteryBusy || t.status === "canceling" ? "disabled" : ""}>${t.status === "canceling" ? "취소 중" : "구매 취소"}</button></li>`).join("")}</ul>`
         : `<p class="lottery-empty">아직 산 복권이 없습니다.</p>`;
+    }
+    if (els.lotteryBuyers) {
+      els.lotteryBuyers.hidden = !worldSync.lotteryAdmin;
+      if (!worldSync.lotteryAdmin) {
+        els.lotteryBuyers.innerHTML = "";
+      } else {
+        const buyerIds = new Set(tickets.map((ticket) => ticket.playerId));
+        if (row?.specialDraw) {
+          els.lotteryBuyers.innerHTML = `<h3>구매 명단 <small>${buyerIds.size}계정 · ${tickets.length}장</small></h3><div class="lottery-buyer-groups">${LOTTERY_SPECIAL_TYPES.map((type) => {
+            const typeTickets = tickets.filter((ticket) => ticket.lotteryType === type.id);
+            return `<section><b>${esc(type.name)} · ${typeTickets.length}명</b><ol>${typeTickets.map((ticket) => lotteryBuyerRow(ticket, buyerIds)).join("") || "<li>아직 구매자 없음</li>"}</ol></section>`;
+          }).join("")}</div>`;
+        } else {
+          els.lotteryBuyers.innerHTML = `<h3>구매 명단 <small>${buyerIds.size}계정 · ${tickets.length}장</small></h3><ol>${tickets.map((ticket) => lotteryBuyerRow(ticket, buyerIds)).join("") || "<li>아직 구매자 없음</li>"}</ol>`;
+        }
+      }
     }
     if (els.lotterySpecialOptions) {
       els.lotterySpecialOptions.hidden = !row?.specialDraw;
@@ -2606,6 +2686,77 @@
     }
   }
 
+  async function cancelLotteryTicket(ticketId) {
+    if (worldSync.lotteryBusy || isServerStopped() || !state?.active) return;
+    const ticket = lotteryTicketList(worldSync.lottery).find((entry) => entry.id === ticketId);
+    const now = kstClock.ok ? kstNowMs() : Date.now();
+    if (!ticket || ticket.playerId !== state.playerId) return;
+    if (now >= Number(worldSync.lottery?.drawAt || 0)) {
+      setLotteryError("추첨 시간이 지나 구매를 취소할 수 없습니다.");
+      return;
+    }
+    const db = firebaseDb();
+    if (!db) {
+      setLotteryError("서버에 연결되지 않았습니다.");
+      return;
+    }
+    worldSync.lotteryBusy = true;
+    setLotteryError("");
+    renderLotteryModal();
+    const ticketKey = safeFbKey(ticketId);
+    const ticketPath = `${LOTTERY_PATH}/tickets/${ticketKey}`;
+    const owner = `${state.playerId}:${clientId}`;
+    try {
+      const playerPath = `bull-lab/world/players/${safeFbKey(state.playerId)}`;
+      const serverPlayer = await db.ref(playerPath).once("value");
+      if (!serverPlayer.exists()) throw new Error("lottery-player-not-ready");
+      const claim = await db.ref(ticketPath).transaction((current) => {
+        if (!current || current.playerId !== state.playerId) return;
+        const ts = kstClock.ok ? kstNowMs() : Date.now();
+        if (current.status === "canceling" && current.cancelOwner && current.cancelOwner !== owner && ts - Number(current.cancelAt || 0) < LOTTERY_CLAIM_LOCK_MS) return;
+        return { ...current, status: "canceling", cancelOwner: owner, cancelAt: ts };
+      }, undefined, false);
+      if (!claim.committed || claim.snapshot.val()?.cancelOwner !== owner) throw new Error("lottery-cancel-locked");
+      const claimedTicket = claim.snapshot.val();
+      const updates = {
+        [ticketPath]: null,
+        [`${LOTTERY_PATH}/pot`]: firebase.database.ServerValue.increment(-LOTTERY_TICKET_PRICE),
+        [`${LOTTERY_PATH}/updatedAt`]: firebase.database.ServerValue.TIMESTAMP,
+        [`${playerPath}/cash`]: firebase.database.ServerValue.increment(LOTTERY_TICKET_PRICE),
+        [`${playerPath}/total`]: firebase.database.ServerValue.increment(LOTTERY_TICKET_PRICE),
+        [`${playerPath}/updatedAt`]: firebase.database.ServerValue.TIMESTAMP,
+        [`${LOTTERY_REFUNDS_PATH}/${ticketKey}`]: {
+          ticketId,
+          playerId: state.playerId,
+          amount: LOTTERY_TICKET_PRICE,
+          refundedAt: firebase.database.ServerValue.TIMESTAMP,
+        },
+      };
+      if (worldSync.lottery?.specialDraw && lotterySpecialType(claimedTicket.lotteryType)) {
+        updates[`${LOTTERY_PATH}/pots/${claimedTicket.lotteryType}`] = firebase.database.ServerValue.increment(-LOTTERY_TICKET_PRICE);
+      }
+      await db.ref().update(updates);
+      state.cash = round1(state.cash + LOTTERY_TICKET_PRICE);
+      syncLocalPlayer(false);
+      writeWallet();
+      queuePush();
+      renderSummary();
+      toast("↩️", "복권 구매 취소", `${money(LOTTERY_TICKET_PRICE)}을 환불했습니다.`);
+    } catch {
+      await db.ref(ticketPath).transaction((current) => {
+        if (!current || current.status !== "canceling" || current.cancelOwner !== owner) return;
+        const next = { ...current, status: "active" };
+        delete next.cancelOwner;
+        delete next.cancelAt;
+        return next;
+      }, undefined, false).catch(() => {});
+      setLotteryError("구매 취소에 실패했습니다. 잠시 후 다시 시도하세요.");
+    } finally {
+      worldSync.lotteryBusy = false;
+      renderLotteryModal();
+    }
+  }
+
   function pickLotteryWinner(tickets, seed) {
     if (!tickets.length) return null;
     const idx = Math.floor(hashUnit(`${seed}|lotto`) * tickets.length) % tickets.length;
@@ -2629,6 +2780,7 @@
         if (!cur || !lotteryRoundOpen(cur)) return;
         if (!force && ts < Number(cur.drawAt || 0)) return;
         const tickets = lotteryTicketList(cur);
+        if (tickets.some((ticket) => ticket.status === "canceling" && ts - Number(ticket.cancelAt || 0) < LOTTERY_CLAIM_LOCK_MS)) return;
         // Next round is always the next 08:25 from *now*, not old drawAt+1 day
         // (force/test draws were skipping an extra day).
         const nextTarget = nextLotteryDrawTarget(ts + 1000);
@@ -8928,6 +9080,10 @@
   els.lotterySpecialOptions?.addEventListener("click", (event) => {
     const button = event.target.closest?.("[data-lottery-type]");
     if (button) buyLotteryTicket(button.getAttribute("data-lottery-type") || "");
+  });
+  els.lotteryMine?.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-lottery-cancel]");
+    if (button) cancelLotteryTicket(button.getAttribute("data-lottery-cancel") || "");
   });
   els.lotteryForce?.addEventListener("click", forceLotteryDraw);
   els.gambleCreateForm?.addEventListener("submit", createGambleTable);
