@@ -2275,6 +2275,14 @@
         usedByPlayer.set(ticket.playerId, used);
       });
     }
+    const pots = row.specialDraw ? Object.fromEntries(LOTTERY_SPECIAL_TYPES.map((type) => {
+      const explicit = Number(row.pots?.[type.id]);
+      const ticketCount = Object.values(tickets).filter((ticket) => ticket.lotteryType === type.id).length;
+      const amount = Number.isFinite(explicit) && explicit >= LOTTERY_BASE_POT
+        ? explicit
+        : LOTTERY_BASE_POT + ticketCount * LOTTERY_TICKET_PRICE;
+      return [type.id, round1(amount)];
+    })) : {};
     const pendingPays = {};
     Object.entries(row.pendingPays || {}).forEach(([key, pay]) => {
       const normalized = normalizeLotteryPay(pay, key);
@@ -2290,8 +2298,8 @@
     return {
       drawId: String(row.drawId || ""),
       drawAt: Number(row.drawAt) || 0,
-      pot: row.specialDraw ? lotteryTotalPot(row) : Math.max(LOTTERY_BASE_POT, round1(Number(row.pot) || LOTTERY_BASE_POT)),
-      pots: row.specialDraw ? Object.fromEntries(LOTTERY_SPECIAL_TYPES.map((type) => [type.id, lotteryTypePot(row, type.id)])) : {},
+      pot: row.specialDraw ? round1(Object.values(pots).reduce((sum, amount) => sum + amount, 0)) : Math.max(LOTTERY_BASE_POT, round1(Number(row.pot) || LOTTERY_BASE_POT)),
+      pots,
       tickets,
       status: row.status === "paid" || row.status === "drawing" ? row.status : "open",
       winnerId: String(row.winnerId || ""),
