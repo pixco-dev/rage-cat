@@ -2126,6 +2126,10 @@
     return listFromMap(row?.tickets).sort((a, b) => (Number(a.boughtAt) || 0) - (Number(b.boughtAt) || 0));
   }
 
+  function lotteryActiveTickets(row) {
+    return lotteryTicketList(row).filter((ticket) => ticket.status !== "canceling");
+  }
+
   function myLotteryTickets(row, playerId = state?.playerId) {
     return lotteryTicketList(row).filter((t) => t.playerId === playerId);
   }
@@ -2336,17 +2340,27 @@
     worldSync.lottery = normalized;
     migrateLegacyLotteryPays();
     const rawId = value && typeof value === "object" ? String(value.drawId || "") : "";
-    if (normalized?.drawId && rawId && normalized.drawId !== rawId) {
+    if (normalized?.drawId && rawId && normalized.drawId !== rawId && lotteryActiveTickets(normalized).length < 1) {
       const db = firebaseDb();
       if (db) {
         db.ref(LOTTERY_PATH).transaction((current) => {
           const cur = normalizeLottery(current);
           if (!cur || !lotteryRoundOpen(cur)) return;
+          if (lotteryActiveTickets(cur).length > 0) return;
           const healed = healLotteryDrawSchedule(cur);
           if (healed.drawId === cur.drawId && healed.drawAt === cur.drawAt) return;
           return healed;
         }).catch(() => {});
       }
+    }
+    const now = kstClock.ok ? kstNowMs() : Date.now();
+    if (
+      normalized
+      && lotteryRoundOpen(normalized)
+      && Number(normalized.drawAt) > 0
+      && now >= Number(normalized.drawAt)
+    ) {
+      maybeSettleLottery();
     }
     tryClaimLotteryWin();
     if (els.lotteryModal && !els.lotteryModal.hidden) renderLotteryModal();
@@ -2618,6 +2632,11 @@
     if (els.lotteryBuy) els.lotteryBuy.disabled = true;
     try {
       await ensureLotteryRound();
+      const stuck = worldSync.lottery;
+      const nowMs = kstClock.ok ? kstNowMs() : Date.now();
+      if (stuck && lotteryRoundOpen(stuck) && Number(stuck.drawAt) > 0 && nowMs >= Number(stuck.drawAt)) {
+        await maybeSettleLottery(true);
+      }
       const db = firebaseDb();
       const ticketId = makeId("lt");
       const now = Date.now();
@@ -2628,7 +2647,7 @@
           const row = healLotteryDrawSchedule(normalizeLottery(current) || freshLotteryRound(ts), ts);
           if (!lotteryRoundOpen(row)) return;
           if (ts >= Number(row.drawAt || 0)) return;
-          const mine = myLotteryTickets(row, state.playerId);
+          const mine = myLotteryTickets(row, state.playerId).filter((ticket) => ticket.status !== "canceling");
           const type = row.specialDraw ? lotterySpecialType(String(requestedType || "")) : null;
           if (row.specialDraw && (!type || mine.some((ticket) => ticket.lotteryType === type.id))) return;
           if (!row.specialDraw && mine.length >= LOTTERY_MAX_TICKETS) return;
@@ -2773,47 +2792,55 @@
     if (!db) return;
     worldSync.lotterySettleBusy = true;
     try {
-      const result = await db.ref(LOTTERY_ROOT_PATH).transaction((root) => {
-        const current = root?.current;
+      // Transaction ONLY the current round. Writing the whole lottery root
+      // (payouts/refunds) races with claim/cancel updates and can stall forever.
+      const result = await db.ref(LOTTERY_PATH).transaction((current) => {
         const ts = kstClock.ok ? kstNowMs() : Date.now();
         const cur = healLotteryDrawSchedule(normalizeLottery(current), ts);
         if (!cur || !lotteryRoundOpen(cur)) return;
         if (!force && ts < Number(cur.drawAt || 0)) return;
         const tickets = lotteryTicketList(cur);
-        if (tickets.some((ticket) => ticket.status === "canceling" && ts - Number(ticket.cancelAt || 0) < LOTTERY_CLAIM_LOCK_MS)) return;
-        // Next round is always the next 08:25 from *now*, not old drawAt+1 day
-        // (force/test draws were skipping an extra day).
+        const active = lotteryActiveTickets(cur);
+        const cancelBlocking = tickets.some((ticket) => (
+          ticket.status === "canceling"
+          && ts - Number(ticket.cancelAt || 0) < LOTTERY_CLAIM_LOCK_MS
+        ));
+        const overdueMs = ts - Number(cur.drawAt || 0);
+        if (cancelBlocking && !force && overdueMs < LOTTERY_CLAIM_LOCK_MS) return;
         const nextTarget = nextLotteryDrawTarget(ts + 1000);
-        if (!tickets.length) {
-          const nextCurrent = {
-            ...cur,
+        if (!active.length) {
+          return {
             drawId: nextTarget.drawId,
             drawAt: nextTarget.drawAt,
             pot: LOTTERY_BASE_POT,
+            pots: {},
             tickets: {},
             status: "open",
+            specialDraw: false,
             winnerId: "",
             winnerName: "",
             winAmount: 0,
+            lastWinnerId: cur.lastWinnerId || "",
+            lastWinnerName: cur.lastWinnerName || "",
+            lastWinAmount: cur.lastWinAmount || 0,
+            lastDrawId: cur.lastDrawId || "",
+            pendingPays: cur.pendingPays || {},
             updatedAt: Date.now(),
           };
-          delete nextCurrent.pendingPay;
-          delete nextCurrent.pendingPays;
-          return { ...(root || {}), current: nextCurrent };
         }
         const wins = [];
         if (cur.specialDraw) {
           LOTTERY_SPECIAL_TYPES.forEach((type) => {
-            const typeTickets = tickets.filter((ticket) => ticket.lotteryType === type.id);
+            const typeTickets = active.filter((ticket) => ticket.lotteryType === type.id);
             const winner = pickLotteryWinner(typeTickets, `${cur.drawId}|${type.id}|${cur.drawAt}|${typeTickets.length}`);
             if (winner) wins.push({ type, winner, amount: lotteryTypePot(cur, type.id) });
           });
         } else {
-          const winner = pickLotteryWinner(tickets, `${cur.drawId}|${cur.drawAt}|${tickets.length}`);
+          const winner = pickLotteryWinner(active, `${cur.drawId}|${cur.drawAt}|${active.length}`);
           if (winner) wins.push({ type: null, winner, amount: round1(Number(cur.pot) || LOTTERY_BASE_POT) });
         }
         if (!wins.length) return;
-        const newPayouts = {};
+        const pendingPays = { ...(cur.pendingPays || {}) };
         wins.forEach(({ type, winner, amount }) => {
           const pay = {
             drawId: type ? `${cur.drawId}-${type.id}` : cur.drawId,
@@ -2827,16 +2854,18 @@
             paidAt: 0,
           };
           const payKey = lotteryPayKey(pay);
-          newPayouts[payKey] = { ...pay, id: payKey };
+          pendingPays[payKey] = { ...pay, id: payKey };
         });
         const winnerNames = wins.map(({ type, winner }) => `${type ? `${type.name} ` : ""}${winner.playerName || winner.playerId}`).join(" · ");
         const totalWinAmount = round1(wins.reduce((sum, win) => sum + win.amount, 0));
-        const nextCurrent = {
+        return {
           drawId: nextTarget.drawId,
           drawAt: nextTarget.drawAt,
           pot: LOTTERY_BASE_POT,
+          pots: {},
           tickets: {},
           status: "open",
+          specialDraw: false,
           winnerId: "",
           winnerName: "",
           winAmount: 0,
@@ -2844,20 +2873,12 @@
           lastWinnerName: winnerNames,
           lastWinAmount: totalWinAmount,
           lastDrawId: cur.drawId,
+          pendingPays,
           updatedAt: Date.now(),
-        };
-        return {
-          ...(root || {}),
-          current: nextCurrent,
-          payouts: {
-            ...(root?.payouts || {}),
-            ...newPayouts,
-          },
         };
       }, undefined, false);
       if (result.committed) {
-        applyLottery(result.snapshot.val()?.current);
-        applyLotteryPayouts(result.snapshot.val()?.payouts);
+        applyLottery(result.snapshot.val());
         tryClaimLotteryWin();
         if (els.lotteryModal && !els.lotteryModal.hidden) renderLotteryModal();
       }
