@@ -2136,6 +2136,12 @@
     return round1(LOTTERY_SPECIAL_TYPES.reduce((sum, type) => sum + lotteryTypePot(row, type.id), 0));
   }
 
+  function lotteryDrawTimeLabel(row) {
+    if (!Number(row?.drawAt)) return "추첨 시각";
+    const parts = parseKstParts(Number(row.drawAt));
+    return `${pad2(parts.h)}:${pad2(parts.mi)}`;
+  }
+
   function lotteryRoundOpen(row) {
     return row?.status === "open" || (row?.specialDraw && row.status === "drawing");
   }
@@ -2455,9 +2461,10 @@
     const tickets = lotteryTicketList(row);
     const mine = myLotteryTickets(row);
     const pot = row ? lotteryTotalPot(row) : LOTTERY_BASE_POT;
+    const drawTime = lotteryDrawTimeLabel(row);
     if (els.lotteryLead) {
       els.lotteryLead.textContent = row?.specialDraw
-        ? "오늘만 A·B·C 복권을 따로 판매합니다. 종류마다 장당 100만원, 1인 1장씩 살 수 있고 오후 4시에 각각 한 명을 뽑습니다."
+        ? `오늘만 A·B·C 복권을 따로 판매합니다. 종류마다 장당 100만원, 1인 1장씩 살 수 있고 ${drawTime}에 각각 한 명을 뽑습니다.`
         : "기본 상금 500만원에서 시작합니다. 장당 100만원이며, 산 금액만큼 상금에 더해집니다. 한 사람 최대 2장. 산 다음날 아침 8시 25분에 구매자 중 한 명이 전액을 받습니다.";
     }
     if (els.lotteryPotValue) els.lotteryPotValue.textContent = money(pot);
@@ -2465,13 +2472,13 @@
       const payYmd = lotteryPayYmd(row);
       els.lotteryDrawLabel.textContent = row?.drawId
         ? (row.specialDraw
-          ? `오늘 특별 추첨 16:00 · A·B·C 각각 1명 당첨 · 현재 총 ${tickets.length}장`
+          ? `오늘 특별 추첨 ${drawTime} · A·B·C 각각 1명 당첨 · 현재 총 ${tickets.length}장`
           : `이번 회차 지급 ${payYmd || "다음날"} 08:25 · 현재 ${tickets.length}장`)
         : "회차 준비 중";
     }
     if (els.lotteryStatus) {
       els.lotteryStatus.textContent = mine.length
-        ? `내 복권 ${mine.length}장 · ${row?.specialDraw ? "종류별 1장, 오늘 16:00 추첨" : "지급은 산 다음날 08:25"}`
+        ? `내 복권 ${mine.length}장 · ${row?.specialDraw ? `종류별 1장, 오늘 ${drawTime} 추첨` : "지급은 산 다음날 08:25"}`
         : (row?.specialDraw ? "A·B·C를 각각 1장씩 구매할 수 있습니다." : `1인 최대 ${LOTTERY_MAX_TICKETS}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`);
     }
     if (els.lotteryMine) {
