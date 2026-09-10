@@ -37,6 +37,7 @@
   const LOTTERY_BASE_POT = 500;
   const LOTTERY_TICKET_PRICE = 100;
   const LOTTERY_MAX_TICKETS = 2;
+  const LOTTERY_SPECIAL_MAX_TICKETS = 3;
   const LOTTERY_CLAIM_LOCK_MS = 120000;
   const PROMO_DESK_STORE = "bull-lab-promo-desk-v2";
   const AI_TRADER_COUNT = 500;
@@ -2116,6 +2117,14 @@
     return lotteryTicketList(row).filter((t) => t.playerId === playerId);
   }
 
+  function lotteryTicketLimit(row) {
+    return row?.specialDraw ? LOTTERY_SPECIAL_MAX_TICKETS : LOTTERY_MAX_TICKETS;
+  }
+
+  function lotteryRoundOpen(row) {
+    return row?.status === "open" || (row?.specialDraw && row.status === "drawing");
+  }
+
   function lotteryPayKey(pay) {
     return safeFbKey(`${String(pay?.drawId || "")}:${String(pay?.playerId || "")}`);
   }
@@ -2174,12 +2183,14 @@
   }
 
   function healLotteryDrawSchedule(row, fromMs = kstClock.ok ? kstNowMs() : Date.now()) {
-    if (!row || row.status !== "open") return row;
+    if (!row || !lotteryRoundOpen(row)) return row;
     const tickets = lotteryTicketList(row);
     const firstBoughtAt = tickets.map((ticket) => Number(ticket.boughtAt) || 0).filter(Boolean).sort((a, b) => a - b)[0] || 0;
     // A ticket fixes the round it belongs to. Never relabel an overdue ticketed
     // round from the current clock, or the draw will be postponed every morning.
-    const correct = firstBoughtAt ? nextLotteryDrawTarget(firstBoughtAt) : nextLotteryDrawTarget(fromMs);
+    const correct = row.specialDraw && row.drawId && Number(row.drawAt) > 0
+      ? { drawId: row.drawId, drawAt: Number(row.drawAt) }
+      : (firstBoughtAt ? nextLotteryDrawTarget(firstBoughtAt) : nextLotteryDrawTarget(fromMs));
     const today = parseKstParts(fromMs).ymd;
     let next = row;
     if (row.drawId !== correct.drawId || Number(row.drawAt) !== Number(correct.drawAt)) {
@@ -2219,6 +2230,7 @@
       lastWinnerName: "",
       lastWinAmount: 0,
       lastDrawId: "",
+      specialDraw: false,
       pendingPays: {},
       updatedAt: Date.now(),
     };
@@ -2261,6 +2273,7 @@
       lastWinnerName: String(row.lastWinnerName || ""),
       lastWinAmount: round1(Number(row.lastWinAmount) || 0),
       lastDrawId: String(row.lastDrawId || ""),
+      specialDraw: row.specialDraw === true,
       pendingPays,
       updatedAt: Number(row.updatedAt) || 0,
     };
@@ -2276,7 +2289,7 @@
       if (db) {
         db.ref(LOTTERY_PATH).transaction((current) => {
           const cur = normalizeLottery(current);
-          if (!cur || cur.status !== "open") return;
+          if (!cur || !lotteryRoundOpen(cur)) return;
           const healed = healLotteryDrawSchedule(cur);
           if (healed.drawId === cur.drawId && healed.drawAt === cur.drawAt) return;
           return healed;
@@ -2405,18 +2418,21 @@
     const row = worldSync.lottery;
     const tickets = lotteryTicketList(row);
     const mine = myLotteryTickets(row);
+    const ticketLimit = lotteryTicketLimit(row);
     const pot = row ? round1(row.pot) : LOTTERY_BASE_POT;
     if (els.lotteryPotValue) els.lotteryPotValue.textContent = money(pot);
     if (els.lotteryDrawLabel) {
       const payYmd = lotteryPayYmd(row);
       els.lotteryDrawLabel.textContent = row?.drawId
-        ? `이번 회차 지급 ${payYmd || "다음날"} 08:25 · 현재 ${tickets.length}장`
+        ? (row.specialDraw
+          ? `오늘 특별 추첨 16:00 · 구매 마감 16:00 · 현재 ${tickets.length}장`
+          : `이번 회차 지급 ${payYmd || "다음날"} 08:25 · 현재 ${tickets.length}장`)
         : "회차 준비 중";
     }
     if (els.lotteryStatus) {
       els.lotteryStatus.textContent = mine.length
-        ? `내 복권 ${mine.length}/${LOTTERY_MAX_TICKETS}장 · 지급은 산 다음날 08:25`
-        : `1인 최대 ${LOTTERY_MAX_TICKETS}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`;
+        ? `내 복권 ${mine.length}/${ticketLimit}장 · ${row?.specialDraw ? "오늘 16:00 추첨" : "지급은 산 다음날 08:25"}`
+        : `1인 최대 ${ticketLimit}장 · 장당 ${money(LOTTERY_TICKET_PRICE)}`;
     }
     if (els.lotteryMine) {
       els.lotteryMine.innerHTML = mine.length
@@ -2426,9 +2442,9 @@
     if (els.lotteryBuy) {
       const now = kstClock.ok ? kstNowMs() : Date.now();
       const drawDue = !!row?.drawAt && now >= Number(row.drawAt);
-      els.lotteryBuy.disabled = !row || row.status !== "open" || drawDue || mine.length >= LOTTERY_MAX_TICKETS || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
-      els.lotteryBuy.textContent = mine.length >= LOTTERY_MAX_TICKETS
-        ? `최대 ${LOTTERY_MAX_TICKETS}장까지`
+      els.lotteryBuy.disabled = !row || !lotteryRoundOpen(row) || drawDue || mine.length >= ticketLimit || round1(state.cash) < LOTTERY_TICKET_PRICE || isServerStopped();
+      els.lotteryBuy.textContent = mine.length >= ticketLimit
+        ? `최대 ${ticketLimit}장까지`
         : `복권 1장 사기 (${money(LOTTERY_TICKET_PRICE)}) →`;
     }
     if (els.lotteryLast) {
@@ -2472,10 +2488,10 @@
         const result = await db.ref(LOTTERY_PATH).transaction((current) => {
           const ts = kstClock.ok ? kstNowMs() : Date.now();
           const row = healLotteryDrawSchedule(normalizeLottery(current) || freshLotteryRound(ts), ts);
-          if (row.status !== "open") return;
+          if (!lotteryRoundOpen(row)) return;
           if (ts >= Number(row.drawAt || 0)) return;
           const mine = myLotteryTickets(row, state.playerId);
-          if (mine.length >= LOTTERY_MAX_TICKETS) return;
+          if (mine.length >= lotteryTicketLimit(row)) return;
           row.tickets = row.tickets || {};
           row.tickets[safeFbKey(ticketId)] = {
             id: ticketId,
@@ -2485,7 +2501,7 @@
           };
           row.pot = round1(Math.max(LOTTERY_BASE_POT, Number(row.pot) || LOTTERY_BASE_POT) + LOTTERY_TICKET_PRICE);
           row.updatedAt = now;
-          row.status = "open";
+          row.status = row.specialDraw ? "drawing" : "open";
           return row;
         }, undefined, false);
         bought = !!result.committed;
@@ -2493,9 +2509,10 @@
         else {
           const snap = normalizeLottery(result.snapshot.val());
           const mine = myLotteryTickets(snap, state.playerId);
+          const ticketLimit = lotteryTicketLimit(snap);
           const ts = kstClock.ok ? kstNowMs() : Date.now();
-          setLotteryError(mine.length >= LOTTERY_MAX_TICKETS
-            ? "한 사람당 최대 2장입니다."
+          setLotteryError(mine.length >= ticketLimit
+            ? `한 사람당 최대 ${ticketLimit}장입니다.`
             : (snap?.drawAt && ts >= Number(snap.drawAt) ? "추첨 처리 중입니다. 잠시 후 새 회차에서 구매하세요." : "지금은 살 수 없습니다."));
         }
       } else {
@@ -2526,7 +2543,7 @@
   async function maybeSettleLottery(force = false) {
     if (worldSync.lotterySettleBusy || isServerStopped()) return;
     const row = normalizeLottery(worldSync.lottery);
-    if (!row?.drawId || row.status !== "open") return;
+    if (!row?.drawId || !lotteryRoundOpen(row)) return;
     const now = kstClock.ok ? kstNowMs() : Date.now();
     if (!force && now < Number(row.drawAt || 0)) return;
     const db = firebaseDb();
@@ -2537,7 +2554,7 @@
         const current = root?.current;
         const ts = kstClock.ok ? kstNowMs() : Date.now();
         const cur = healLotteryDrawSchedule(normalizeLottery(current), ts);
-        if (!cur || cur.status !== "open") return;
+        if (!cur || !lotteryRoundOpen(cur)) return;
         if (!force && ts < Number(cur.drawAt || 0)) return;
         const tickets = lotteryTicketList(cur);
         // Next round is always the next 08:25 from *now*, not old drawAt+1 day
